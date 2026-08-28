@@ -156,20 +156,23 @@ function Install-Node {
         }
     }
 
-    # 2) 在线下载最新 LTS 便携版（免管理员，最稳妥）
-    try {
-        Write-Log '正在查询 Node.js 最新 LTS 版本…'
-        $idx = Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -TimeoutSec 30
-        $latest = $idx | Where-Object { $_.lts } | Select-Object -First 1
-        if ($latest) {
-            $ver = $latest.version
-            $url = "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip"
-            $tmp = Join-Path $env:TEMP "node-$ver-win-x64.zip"
-            Write-Log "正在下载 Node.js $ver 便携版（约 30MB）…"
-            Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 300
-            if (Expand-PortableNodeZip $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue; return $true }
-        }
-    } catch { Write-Log "下载便携版失败：$($_.Exception.Message)" }
+    # 2) 在线下载最新 LTS 便携版（免管理员，最稳妥）。
+    #    官方源失败（国内网络常见）自动切 npmmirror 的 node 二进制镜像重试。
+    foreach ($base in @('https://nodejs.org/dist', 'https://registry.npmmirror.com/-/binary/node')) {
+        try {
+            Write-Log "正在查询 Node.js 最新 LTS 版本（$base）…"
+            $idx = Invoke-RestMethod -Uri "$base/index.json" -TimeoutSec 30
+            $latest = $idx | Where-Object { $_.lts } | Select-Object -First 1
+            if ($latest) {
+                $ver = $latest.version
+                $url = "$base/$ver/node-$ver-win-x64.zip"
+                $tmp = Join-Path $env:TEMP "node-$ver-win-x64.zip"
+                Write-Log "正在下载 Node.js $ver 便携版（约 30MB）…"
+                Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -TimeoutSec 300
+                if (Expand-PortableNodeZip $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue; return $true }
+            }
+        } catch { Write-Log "从 $base 下载失败：$($_.Exception.Message)" }
+    }
 
     # 3) winget 兜底
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
@@ -209,6 +212,54 @@ function Expand-PortableNodeZip {
     }
 }
 
+# npm 11（node 24 自带 11.12.x）安装含嵌套 protobufjs 的依赖树时，其
+# postinstall 会报 "Cannot find module '...\protobufjs\scripts\postinstall'"
+# 导致整个全局安装失败（包本身正常、单装 protobufjs 正常、--ignore-scripts
+# 可装完，纯脚本阶段问题；npm 12 已修复）。识别特征：输出里同时出现
+# protobufjs / postinstall / Cannot find module。
+function Test-NpmProtobufjsFailure {
+    param([string[]]$Lines)
+    $joined = $Lines -join "`n"
+    return (($joined -match 'protobufjs') -and ($joined -match 'postinstall') -and ($joined -match 'Cannot find module|MODULE_NOT_FOUND'))
+}
+
+# 升级 npm 到 12 并返回新的 npm.cmd 路径（升级产物在 prefix 下）；
+# 失败返回 $null。升级不影响已装包，只在检测到 protobufjs 问题时触发。
+# npm 12 的 allowScripts 机制默认阻止依赖的 install 脚本，node-pty/koffi/
+# dsh-subprocess-local 的原生绑定需要执行——重试时用 --allow-scripts 显式放行。
+$NPM12_ALLOW_SCRIPTS = '@deepseek-ai/dsh-subprocess-local,koffi,node-pty'
+# 官方源失败（国内网络常见）时的 npm 镜像
+$NPM_REGISTRY_FALLBACK = 'https://registry.npmmirror.com'
+function Update-NpmTo12 {
+    param([string]$NpmCmd)
+    Write-Log '检测到 npm 11 的 protobufjs postinstall 已知问题，正在自动升级 npm 到 12…'
+    Invoke-Native { & $NpmCmd install -g npm@12 --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+    if ($LASTEXITCODE -ne 0) {
+        # 国内网络常见：官方源失败 → npmmirror 镜像重试
+        Write-Log 'npm 12 官方源升级失败，切换 npmmirror 镜像重试…'
+        Invoke-Native { & $NpmCmd install -g npm@12 --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log 'npm 12 升级失败。可手动执行 npm install -g npm@12 后重跑安装器'
+        return $null
+    }
+    # 重新定位 npm：升级产物装在 prefix（NPM_CONFIG_PREFIX 或 npm config get prefix）
+    $prefix = if ($env:NPM_CONFIG_PREFIX -and $env:NPM_CONFIG_PREFIX.Trim() -ne '') { $env:NPM_CONFIG_PREFIX.Trim() } else { (& $NpmCmd config get prefix 2>$null).Trim() }
+    $newNpm = Join-Path $prefix 'npm.cmd'
+    if (-not (Test-Path $newNpm)) {
+        Write-Log "npm 已升级，但未在 $prefix 找到 npm.cmd，仍使用原 npm"
+        return $NpmCmd
+    }
+    # 确认新 npm 确实是 12.x（老 shim 或 PATH 干扰时避免误用）
+    $ver = (& $newNpm --version 2>$null)
+    if ($ver -and $ver -match '^12\.') {
+        Write-Log "npm 已升级：$newNpm (v$ver)"
+        return $newNpm
+    }
+    Write-Log "npm 升级产物版本异常（$ver），请手动执行 npm install -g npm@12 后重跑安装器"
+    return $null
+}
+
 function Install-HarnessPackages {
     $npmCmd = (Resolve-NodeInfo).NpmCmd
     if (-not $npmCmd) {
@@ -217,14 +268,82 @@ function Install-HarnessPackages {
     if (-not $npmCmd) { return 'fail' }
     Write-Log '正在 npm 全局安装 @deepseek-ai/dsh 与 @deepseek-harness-tui/dsh-tui（首次约需下载 300MB，请耐心等待）…'
     $env:NPM_CONFIG_FUND = 'false'
-    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh $TUI_PACKAGE --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+    # 失败恢复顺序：protobufjs bug（npm 11）→ 升级 npm 12 → 镜像重试 → 降级仅装 TUI。
+    # 官方源与 npmmirror 各试一次，protobufjs 特征在任何源下都先走 npm 12。
+    $npmOut = @()
+    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
     if ($LASTEXITCODE -ne 0) {
+        if (Test-NpmProtobufjsFailure $npmOut) {
+            Write-Log '组合安装失败：npm 11 的 protobufjs postinstall 已知问题（MODULE_NOT_FOUND）'
+            $newNpm = Update-NpmTo12 $npmCmd
+            if ($newNpm) {
+                $npmCmd = $newNpm
+                Write-Log '使用 npm 12 重新尝试组合安装…'
+                $npmOut = @()
+                Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                if ($LASTEXITCODE -eq 0) {
+                    Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+                    return 'ok'
+                }
+            }
+        } else {
+            # 网络原因（国内常见）→ npmmirror 镜像重试一次
+            Write-Log 'npm 官方源安装失败，切换 npmmirror 镜像重试…'
+            $npmOut = @()
+            Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+            if ($LASTEXITCODE -eq 0) {
+                Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+                return 'ok'
+            }
+            # 镜像下也可能撞 npm 11 的 protobufjs bug → npm 12 升级重试
+            if (Test-NpmProtobufjsFailure $npmOut) {
+                Write-Log '镜像源安装同样遇到 protobufjs postinstall 问题，升级 npm 12 后重试…'
+                $newNpm = Update-NpmTo12 $npmCmd
+                if ($newNpm) {
+                    $npmCmd = $newNpm
+                    $npmOut = @()
+                    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                    if ($LASTEXITCODE -eq 0) {
+                        Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+                        return 'ok'
+                    }
+                }
+            }
+        }
         # 常见原因：DeepSeek Harness（TUI/Web）正在运行，全局 @deepseek-ai/dsh 目录被进程占用
         # （Windows 文件锁），npm 替换失败并回滚。降级：只装 TUI 包（不碰运行中的 dsh 树）。
-        Write-Log '@deepseek-ai/dsh 安装未完成（很可能因为 Harness 正在运行、全局目录被占用）'
+        Write-Log '@deepseek-ai/dsh 安装未完成（常见原因：Harness 正在运行、全局目录被占用；或网络/镜像问题未解决）'
         Write-Log '降级方案：仅安装 TUI 包 @deepseek-harness-tui/dsh-tui…'
-        Invoke-Native { & $npmCmd install -g $TUI_PACKAGE --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
-        if ($LASTEXITCODE -ne 0) { return 'fail' }
+        $npmOut = @()
+        Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+        if ($LASTEXITCODE -ne 0) {
+            if (Test-NpmProtobufjsFailure $npmOut) {
+                # 降级也遇到 protobufjs bug → 同样升级 npm 12 重试
+                Write-Log 'TUI 包安装同样遇到 protobufjs postinstall 问题，尝试升级 npm 12 后重试…'
+                $newNpm = Update-NpmTo12 $npmCmd
+                if ($newNpm) {
+                    $npmCmd = $newNpm
+                    $npmOut = @()
+                    Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                    if ($LASTEXITCODE -eq 0) {
+                        Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+                        Write-Log 'TUI 包安装成功（npm 12）'
+                        return 'tui-only'
+                    }
+                }
+            } else {
+                # 网络原因 → 镜像重试 TUI 包
+                Write-Log 'TUI 包安装失败，切换 npmmirror 镜像重试…'
+                $npmOut = @()
+                Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                if ($LASTEXITCODE -eq 0) {
+                    Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+                    Write-Log 'TUI 包安装成功（npmmirror 镜像）'
+                    return 'tui-only'
+                }
+            }
+            return 'fail'
+        }
         Write-Log 'TUI 包安装成功。提示：关闭 TUI/Harness 后重新运行安装器即可更新 @deepseek-ai/dsh（不影响 TUI 使用）'
         Add-ToUserPath (Join-Path $env:APPDATA 'npm')
         return 'tui-only'
@@ -247,6 +366,11 @@ function Ensure-Pnpm {
     if (-not $npmCmd) { return $false }
     try {
         Invoke-Native { & $npmCmd install -g pnpm@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+        if ($LASTEXITCODE -ne 0) {
+            # 国内网络常见：官方源失败 → npmmirror 镜像重试
+            Write-Log 'pnpm 安装失败，切换 npmmirror 镜像重试…'
+            Invoke-Native { & $npmCmd install -g pnpm@latest --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+        }
         return ($LASTEXITCODE -eq 0)
     } catch {
         Write-Log "pnpm 安装失败：$($_.Exception.Message)"
@@ -292,7 +416,13 @@ function Install-TuiProfile {
         Invoke-Native { & $dshCmd plugin --profile $PROFILE_NAME add "$TUI_PACKAGE@latest" 2>&1 } | ForEach-Object { Write-Log "dsh: $_" }
         if ($LASTEXITCODE -eq 0) { break }
         Write-Log "dsh plugin 退出码 $LASTEXITCODE"
-        if ($attempt -eq 0 -and (Test-Path $wsFile)) { Fix-PnpmAllowBuilds -WsFile $wsFile }
+        if ($attempt -eq 0) {
+            if (Test-Path $wsFile) { Fix-PnpmAllowBuilds -WsFile $wsFile }
+            # 网络原因（国内常见）：第二次尝试让 pnpm 走 npmmirror 镜像
+            # （pnpm 尊重 npm_config_registry 环境变量；allowBuilds 已在上一步修复）
+            $env:npm_config_registry = $NPM_REGISTRY_FALLBACK
+            Write-Log "第二次尝试使用 npmmirror 镜像（npm_config_registry=$NPM_REGISTRY_FALLBACK）…"
+        }
     }
     if ($LASTEXITCODE -ne 0) { return $false }
     # 校验 bundle 层已包含 TUI 包（pnpm 失败时 reconcile 不会执行）
