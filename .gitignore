@@ -1,0 +1,12 @@
+# 离线安装包（体积大，不提交）
+tools/*.msi
+tools/*.zip
+
+# 日志 / 系统文件
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地凭证（绝不上传！）
+.credentials.yaml
