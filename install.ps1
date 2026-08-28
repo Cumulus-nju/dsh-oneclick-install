@@ -402,7 +402,7 @@ function Write-PerfOverlay {
             }) -join "`n"
             if ($body.Trim() -ne '' -and $body.Trim() -ne '[]') {
                 Write-Log "检测到已有自定义覆盖层 $patchPath，跳过流畅模式写入（尊重你的配置）"
-                return
+                return $false
             }
         }
     }
@@ -431,6 +431,7 @@ function Write-PerfOverlay {
     )
     Write-YamlLines -Path $patchPath -Lines $lines
     Write-Log "已写入流畅模式覆盖层：$patchPath"
+    return $true
 }
 #endregion
 
@@ -601,8 +602,9 @@ function Invoke-InstallFlow {
 
     # 7) 流畅模式覆盖层
     if ($Smooth -and -not $OnlyConfig) {
-        Write-PerfOverlay -DshHome $dshHome -Effort $Effort -Model $Model
-        $summary += '流畅模式已启用'
+        if (Write-PerfOverlay -DshHome $dshHome -Effort $Effort -Model $Model) {
+            $summary += '流畅模式已启用'
+        }
     }
 
     # 8) 启动器 + 快捷方式
