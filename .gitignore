@@ -10,3 +10,6 @@ desktop.ini
 
 # 本地凭证（绝不上传！）
 .credentials.yaml
+
+# 会话记忆（含本机路径，不上传）
+MEMORY.md
