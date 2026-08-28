@@ -874,7 +874,13 @@ Write-Log "DSH 家目录：$dshHome"
 
 if ($Headless) {
     if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-        Write-Host 'Headless 模式必须提供 -ApiKey 参数'
+        # 支持用环境变量传入 Key（避免出现在命令行/进程参数里）
+        if ($env:DSH_INSTALL_API_KEY -and $env:DSH_INSTALL_API_KEY.Trim() -ne '') {
+            $ApiKey = $env:DSH_INSTALL_API_KEY.Trim()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+        Write-Host 'Headless 模式必须提供 -ApiKey 参数（或用环境变量 DSH_INSTALL_API_KEY）'
         exit 2
     }
     $result = Invoke-InstallFlow -Key $ApiKey -Base $BaseUrl -Effort $ReasoningEffort -Model $Model `
