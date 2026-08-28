@@ -37,7 +37,8 @@ param(
     [switch]$SkipTuiSetup,      # 跳过 pnpm 检查与 profile 安装（调试用）
     [switch]$NoValidate,        # 跳过 API Key 在线校验
     [bool]$SmoothMode = $true,  # 流畅模式：写入性能优化覆盖层
-    [string]$DshHome = ""       # 覆盖 DSH 家目录（默认 $env:DSH_HOME 或 ~/.dsh）
+    [string]$DshHome = "",      # 覆盖 DSH 家目录（默认 $env:DSH_HOME 或 ~/.dsh）
+    [switch]$LibraryMode        # 内部使用：仅加载函数不进入入口（GUI 后台 runspace 点源调用）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,11 +61,71 @@ function Get-DshHome {
 function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $Message
-    if ($script:LogSink) { & $script:LogSink $line }
-    # 同时镜像到控制台：install.bat 的终端窗口也能看到安装进度
-    Write-Host $line
+    if ($script:LogSink) { & $script:LogSink $line } else { Write-Host $line }
+    # 注意：GUI 后台线程（独立 runspace）里不能调 Write-Host——
+    # 没有 runspace 的线程上会报"此线程中没有可用于运行脚本的运行空间"。
+    # GUI 模式的终端镜像由 UI 定时器统一做（见 Show-ConfigWindow）。
 }
 $script:LogSink = $null
+
+# ---- GUI 后台安装基础设施 --------------------------------------------------
+# Windows PowerShell 5.1 的 BackgroundWorker 事件回调跑在没有 runspace 的
+# 线程池线程上，脚本块一执行就抛 PSInvalidOperationException。因此 GUI 安装
+# 改为：独立 runspace 跑安装流程 -> 日志进线程安全队列 -> UI 定时器刷新到
+# 文本框并镜像到 install.bat 弹出的终端。
+$script:LogQueue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
+$script:InstallState = [pscustomobject]@{ Done = $false; Ok = $false; Error = ''; Summary = ''; CredsPath = ''; DshHome = '' }
+$script:InstallFinalized = $false
+$script:InstallPs = $null
+$script:InstallAsync = $null
+
+$script:InstallWorkerSb = {
+    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State)
+    try {
+        # 点源自身脚本（-LibraryMode 只加载函数），复用全部安装逻辑
+        . $ScriptPath -LibraryMode
+        $script:LogSink = { param($line) [void]$LogQueue.Enqueue($line) }
+        $r = Invoke-InstallFlow -Key $Key -Base $Base -Effort $Effort -Model $Model `
+            -MakeShortcut $MakeShortcut -Launch $Launch -Smooth $Smooth -OnlyConfig $OnlyConfig
+        $State.Ok = $r.Ok
+        $State.Summary = $r.Summary
+        $State.CredsPath = $r.CredsPath
+        $State.DshHome = $r.DshHome
+        if (-not $r.Ok) { $State.Error = $r.Error }
+    } catch {
+        $State.Ok = $false
+        $State.Error = $_.Exception.Message
+    } finally {
+        $State.Done = $true
+    }
+}
+
+function Start-InstallWorker {
+    param([string]$Key, [string]$Base, [string]$Effort, [string]$Model,
+          [bool]$MakeShortcut, [bool]$Launch, [bool]$Smooth, [bool]$OnlyConfig)
+    try {
+        if ($script:InstallPs) {
+            try { $null = $script:InstallPs.EndInvoke($script:InstallAsync) } catch { }
+            $script:InstallPs.Dispose()
+            $script:InstallPs.Runspace.Dispose()
+        }
+    } catch { }
+    $script:InstallState.Done = $false
+    $script:InstallState.Ok = $false
+    $script:InstallState.Error = ''
+    $script:InstallFinalized = $false
+    $dummy = $null
+    while ($script:LogQueue.TryDequeue([ref]$dummy)) { }
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+    $rs.ThreadOptions = 'ReuseThread'
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    $null = $ps.AddScript($script:InstallWorkerSb.ToString()).AddArgument($PSCommandPath).AddArgument($Key).AddArgument($Base).AddArgument($Effort).AddArgument($Model).AddArgument($MakeShortcut).AddArgument($Launch).AddArgument($Smooth).AddArgument($OnlyConfig).AddArgument($script:LogQueue).AddArgument($script:InstallState)
+    $script:InstallPs = $ps
+    $script:InstallAsync = $ps.BeginInvoke()
+}
 
 # 包装原生命令调用：EAP=Stop 时 stderr 会抛 NativeCommandError，这里临时降级
 function Invoke-Native {
@@ -929,50 +990,50 @@ function Show-ConfigWindow {
         $form.Cursor = if ($busy) { [System.Windows.Forms.Cursors]::WaitCursor } else { [System.Windows.Forms.Cursors]::Default }
     }
 
-    $worker = New-Object System.ComponentModel.BackgroundWorker
-    $worker.WorkerReportsProgress = $true
-
-    $worker.Add_DoWork({
-        param($s, $e)
-        $w = $s
-        $script:LogSink = { param($line) $w.ReportProgress(0, $line) }
-        $result = Invoke-InstallFlow -Key $txtKey.Text -Base $txtBase.Text `
-            -Effort $(if ($cmbEffort.SelectedIndex -gt 0) { $cmbEffort.SelectedItem } else { '' }) `
-            -Model $cmbModel.Text `
-            -MakeShortcut $chkShortcut.Checked -Launch $chkLaunch.Checked -Smooth $chkSmooth.Checked -OnlyConfig $OnlyConfig
-        $e.Result = $result
-    })
-    $worker.Add_ProgressChanged({
-        param($s, $e)
-        $txtLog.AppendText([string]$e.UserState + "`r`n")
-        $txtLog.SelectionStart = $txtLog.TextLength
-        $txtLog.ScrollToCaret()
-    })
-    $worker.Add_RunWorkerCompleted({
-        param($s, $e)
-        $script:LogSink = { param($line) $txtLog.AppendText($line + "`r`n"); $txtLog.SelectionStart = $txtLog.TextLength; $txtLog.ScrollToCaret() }
-        Set-Busy $false
-        if ($e.Error) {
-            [System.Windows.Forms.MessageBox]::Show($form, $e.Error.Message, '安装出错', 'OK', 'Error') | Out-Null
-            return
+    # ---- 安装进度刷新（替代 BackgroundWorker，PS 5.1 下后台线程无 runspace）----
+    # 独立 runspace 的日志进入线程安全队列，UI 定时器在这里刷新到文本框，
+    # 并镜像到 install.bat 弹出的终端窗口（[Console]::WriteLine 任意线程安全）。
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 150
+    $timer.Add_Tick({
+        $line = $null
+        while ($script:LogQueue.TryDequeue([ref]$line)) {
+            $txtLog.AppendText($line + "`r`n")
+            $txtLog.SelectionStart = $txtLog.TextLength
+            $txtLog.ScrollToCaret()
+            try { [Console]::WriteLine($line) } catch { }
         }
-        $result = $e.Result
-        if (-not $result.Ok) {
-            [System.Windows.Forms.MessageBox]::Show($form, $result.Error, '未能完成', 'OK', 'Warning') | Out-Null
-            return
+        if ($script:InstallState.Done -and -not $script:InstallFinalized) {
+            $script:InstallFinalized = $true
+            $timer.Stop()
+            Set-Busy $false
+            $st = $script:InstallState
+            if ($st.Ok) {
+                $msg = "安装完成！`n`n$($st.Summary)`n`n" +
+                       "启动方式：双击桌面快捷方式，或在终端运行 dsh-tui（恢复上次会话：dsh-tui --resume）`n" +
+                       "凭证文件: $($st.CredsPath)`n`n" +
+                       "使用说明（/btw 等指令速查）：仓库 docs/使用说明.md`n" +
+                       "提示：以后改 API Key 可重新运行 install.bat，或双击 configure.bat。"
+                [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 一键安装', 'OK', 'Information') | Out-Null
+                if ($chkLaunch.Checked -and -not $OnlyConfig -and $st.DshHome) {
+                    $bat = Join-Path $st.DshHome 'launchers\dsh-tui.bat'
+                    if (Test-Path $bat) { Start-Process -FilePath $bat }
+                }
+                $form.Close()
+            } else {
+                [System.Windows.Forms.MessageBox]::Show($form, $st.Error, '未能完成', 'OK', 'Warning') | Out-Null
+            }
+            try {
+                if ($script:InstallPs) {
+                    $null = $script:InstallPs.EndInvoke($script:InstallAsync)
+                    $script:InstallPs.Dispose()
+                    $script:InstallPs.Runspace.Dispose()
+                    $script:InstallPs = $null
+                }
+            } catch { }
         }
-        $msg = "安装完成！`n`n$($result.Summary)`n`n" +
-               "启动方式：双击桌面快捷方式，或在终端运行 dsh-tui（恢复上次会话：dsh-tui --resume）`n" +
-               "凭证文件: $($result.CredsPath)`n`n" +
-               "使用说明（/btw 等指令速查）：仓库 docs/使用说明.md`n" +
-               "提示：以后改 API Key 可重新运行 install.bat，或双击 configure.bat。"
-        [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 一键安装', 'OK', 'Information') | Out-Null
-        if ($chkLaunch.Checked -and -not $OnlyConfig) {
-            $bat = Join-Path $result.DshHome 'launchers\dsh-tui.bat'
-            if (Test-Path $bat) { Start-Process -FilePath $bat }
-        }
-        $form.Close()
     })
+    $timer.Start()
 
     $btnInstall.Add_Click({
         if ($script:workerBusy) { return }
@@ -982,7 +1043,10 @@ function Show-ConfigWindow {
         }
         Set-Busy $true
         $txtLog.Clear()
-        $worker.RunWorkerAsync()
+        Start-InstallWorker -Key $txtKey.Text -Base $txtBase.Text `
+            -Effort $(if ($cmbEffort.SelectedIndex -gt 0) { $cmbEffort.SelectedItem } else { '' }) `
+            -Model $cmbModel.Text `
+            -MakeShortcut $chkShortcut.Checked -Launch $chkLaunch.Checked -Smooth $chkSmooth.Checked -OnlyConfig $OnlyConfig
     })
 
     $btnTest.Add_Click({
@@ -1008,34 +1072,36 @@ function Show-ConfigWindow {
 #endregion
 
 #region 入口
-$dshHome = Get-DshHome
-Write-Log "DSH 家目录：$dshHome"
+if (-not $LibraryMode) {
+    $dshHome = Get-DshHome
+    Write-Log "DSH 家目录：$dshHome"
 
-if ($Headless) {
-    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-        # 支持用环境变量传入 Key（避免出现在命令行/进程参数里）
-        if ($env:DSH_INSTALL_API_KEY -and $env:DSH_INSTALL_API_KEY.Trim() -ne '') {
-            $ApiKey = $env:DSH_INSTALL_API_KEY.Trim()
+    if ($Headless) {
+        if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+            # 支持用环境变量传入 Key（避免出现在命令行/进程参数里）
+            if ($env:DSH_INSTALL_API_KEY -and $env:DSH_INSTALL_API_KEY.Trim() -ne '') {
+                $ApiKey = $env:DSH_INSTALL_API_KEY.Trim()
+            }
         }
+        if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+            Write-Host 'Headless 模式必须提供 -ApiKey 参数（或用环境变量 DSH_INSTALL_API_KEY）'
+            exit 2
+        }
+        $result = Invoke-InstallFlow -Key $ApiKey -Base $BaseUrl -Effort $ReasoningEffort -Model $Model `
+            -MakeShortcut (-not $NoShortcut) -Launch (-not $NoLaunch) -Smooth $SmoothMode -OnlyConfig $ConfigureOnly
+        if (-not $result.Ok) {
+            Write-Host "失败：$($result.Error)"
+            exit 1
+        }
+        Write-Host ''
+        Write-Host '==== 安装完成 ===='
+        Write-Host $result.Summary
+        Write-Host "DSH 家目录: $($result.DshHome)"
+        Write-Host '启动: dsh-tui（恢复上次会话: dsh-tui --resume）'
+        Write-Host '使用说明（/btw 等指令速查）: 仓库 docs/使用说明.md'
+        exit 0
     }
-    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-        Write-Host 'Headless 模式必须提供 -ApiKey 参数（或用环境变量 DSH_INSTALL_API_KEY）'
-        exit 2
-    }
-    $result = Invoke-InstallFlow -Key $ApiKey -Base $BaseUrl -Effort $ReasoningEffort -Model $Model `
-        -MakeShortcut (-not $NoShortcut) -Launch (-not $NoLaunch) -Smooth $SmoothMode -OnlyConfig $ConfigureOnly
-    if (-not $result.Ok) {
-        Write-Host "失败：$($result.Error)"
-        exit 1
-    }
-    Write-Host ''
-    Write-Host '==== 安装完成 ===='
-    Write-Host $result.Summary
-    Write-Host "DSH 家目录: $($result.DshHome)"
-    Write-Host '启动: dsh-tui（恢复上次会话: dsh-tui --resume）'
-    Write-Host '使用说明（/btw 等指令速查）: 仓库 docs/使用说明.md'
-    exit 0
-}
 
-Show-ConfigWindow -OnlyConfig $ConfigureOnly
+    Show-ConfigWindow -OnlyConfig $ConfigureOnly
+}
 #endregion
