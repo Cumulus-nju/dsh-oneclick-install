@@ -5,6 +5,8 @@
 
 [English](#english)
 
+> 📖 **使用说明**：安装过程详解 + TUI 指令速查（`/btw`、`/resume`、`/model` 等斜杠指令全集、快捷键、鼠标、环境变量、常见问题）见 **[docs/使用说明.md](docs/使用说明.md)**。
+
 ---
 
 ## 它做了什么
@@ -120,6 +122,7 @@ dsh-oneclick-install/
 ├── uninstall.ps1         # 卸载脚本
 ├── launchers/dsh-tui.bat # TUI 启动器（安装时复制到 ~/.dsh/launchers/）
 ├── assets/deepseek.ico   # 快捷方式图标
+├── docs/使用说明.md       # 安装过程 + TUI 指令速查（/btw 等）
 ├── tools/                # 可选：放 Node.js 离线安装包
 └── README.md
 ```

@@ -825,6 +825,7 @@ function Show-ConfigWindow {
         $msg = "安装完成！`n`n$($result.Summary)`n`n" +
                "启动方式：双击桌面快捷方式，或在终端运行 dsh-tui（恢复上次会话：dsh-tui --resume）`n" +
                "凭证文件: $($result.CredsPath)`n`n" +
+               "使用说明（/btw 等指令速查）：仓库 docs/使用说明.md`n" +
                "提示：以后改 API Key 可重新运行 install.bat，或双击 configure.bat。"
         [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 一键安装', 'OK', 'Information') | Out-Null
         if ($chkLaunch.Checked -and -not $OnlyConfig) {
@@ -887,6 +888,7 @@ if ($Headless) {
     Write-Host $result.Summary
     Write-Host "DSH 家目录: $($result.DshHome)"
     Write-Host '启动: dsh-tui（恢复上次会话: dsh-tui --resume）'
+    Write-Host '使用说明（/btw 等指令速查）: 仓库 docs/使用说明.md'
     exit 0
 }
 
