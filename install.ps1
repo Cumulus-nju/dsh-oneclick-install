@@ -214,18 +214,23 @@ function Install-HarnessPackages {
     if (-not $npmCmd) {
         $npmCmd = Resolve-CmdShim 'npm'
     }
-    if (-not $npmCmd) { return $false }
+    if (-not $npmCmd) { return 'fail' }
     Write-Log '正在 npm 全局安装 @deepseek-ai/dsh 与 @deepseek-harness-tui/dsh-tui（首次约需下载 300MB，请耐心等待）…'
     $env:NPM_CONFIG_FUND = 'false'
-    try {
-        Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh $TUI_PACKAGE --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
-        if ($LASTEXITCODE -ne 0) { return $false }
-    } catch {
-        Write-Log "npm 安装失败：$($_.Exception.Message)"
-        return $false
+    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh $TUI_PACKAGE --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+    if ($LASTEXITCODE -ne 0) {
+        # 常见原因：DeepSeek Harness（TUI/Web）正在运行，全局 @deepseek-ai/dsh 目录被进程占用
+        # （Windows 文件锁），npm 替换失败并回滚。降级：只装 TUI 包（不碰运行中的 dsh 树）。
+        Write-Log '@deepseek-ai/dsh 安装未完成（很可能因为 Harness 正在运行、全局目录被占用）'
+        Write-Log '降级方案：仅安装 TUI 包 @deepseek-harness-tui/dsh-tui…'
+        Invoke-Native { & $npmCmd install -g $TUI_PACKAGE --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+        if ($LASTEXITCODE -ne 0) { return 'fail' }
+        Write-Log 'TUI 包安装成功。提示：关闭 TUI/Harness 后重新运行安装器即可更新 @deepseek-ai/dsh（不影响 TUI 使用）'
+        Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+        return 'tui-only'
     }
     Add-ToUserPath (Join-Path $env:APPDATA 'npm')
-    return $true
+    return 'ok'
 }
 
 function Ensure-Pnpm {
@@ -241,7 +246,7 @@ function Ensure-Pnpm {
     $npmCmd = Resolve-CmdShim 'npm'
     if (-not $npmCmd) { return $false }
     try {
-        Invoke-Native { & $npmCmd install -g pnpm@latest --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
+        Invoke-Native { & $npmCmd install -g pnpm@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { Write-Log "npm: $_" }
         return ($LASTEXITCODE -eq 0)
     } catch {
         Write-Log "pnpm 安装失败：$($_.Exception.Message)"
@@ -556,8 +561,10 @@ function Invoke-InstallFlow {
 
     # 2) npm 全局安装 Harness + TUI
     if (-not $OnlyConfig -and -not $SkipNpmInstall) {
-        if (-not (Install-HarnessPackages)) { return @{ Ok = $false; Error = '@deepseek-ai/dsh / @deepseek-harness-tui/dsh-tui 安装失败，请检查网络后重试' } }
-        $summary += 'dsh + dsh-tui 已安装'
+        $npmResult = Install-HarnessPackages
+        if ($npmResult -eq 'fail') { return @{ Ok = $false; Error = '@deepseek-ai/dsh / @deepseek-harness-tui/dsh-tui 安装失败，请检查网络后重试' } }
+        if ($npmResult -eq 'ok') { $summary += 'dsh + dsh-tui 已安装' }
+        else { $summary += 'dsh-tui 已安装（@deepseek-ai/dsh 更新被跳过，见日志提示）' }
     }
 
     # 3) pnpm + dsh-tui profile
