@@ -1,12 +1,49 @@
 @echo off
+setlocal EnableExtensions
 title DeepSeek Harness - One-Click Installer
+cd /d "%~dp0"
+
 rem ============================================================
-rem  DeepSeek Harness 一键安装入口
-rem  双击本文件即可：弹出配置窗口 -> 填写 API Key -> 一键安装
+rem  DeepSeek Harness one-click installer (Windows)
+rem  Double-click this file: a terminal opens, then a config
+rem  window appears. Fill in your API key and click Install.
+rem  Progress is mirrored to this terminal window.
 rem ============================================================
-powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0install.ps1" %*
-if errorlevel 1 (
-  echo.
-  echo 安装未完成，请查看上方日志。
-  pause
+
+rem --- install.ps1 must sit next to this file ---
+if not exist "%~dp0install.ps1" (
+    echo.
+    echo [ERROR] install.ps1 not found next to install.bat.
+    echo         Keep install.bat and install.ps1 in the same folder.
+    echo.
+    pause
+    exit /b 1
 )
+
+rem --- Remove the "downloaded from the internet" block, if any ---
+powershell.exe -NoProfile -Command "Unblock-File -Path '%~dp0install.ps1' -ErrorAction SilentlyContinue" >nul 2>&1
+
+echo ================================================================
+echo  DeepSeek Harness one-click installer
+echo  Folder: %~dp0
+echo  A configuration window will open. Progress is also shown here.
+echo  Do NOT close this terminal until installation finishes.
+echo ================================================================
+echo.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0install.ps1" %*
+set "EXITCODE=%ERRORLEVEL%"
+
+echo.
+if "%EXITCODE%"=="0" (
+    echo [OK] Installer finished. See the summary above.
+) else (
+    echo [ERROR] Installer exited with code %EXITCODE%. See log above.
+    echo If the window closed instantly or nothing happened, try:
+    echo   - right-click install.ps1 - Properties - Unblock
+    echo   - temporarily disable antivirus, then retry
+    echo   - open a cmd window in this folder and run: install.bat
+)
+echo.
+pause
+exit /b %EXITCODE%

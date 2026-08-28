@@ -60,7 +60,9 @@ function Get-DshHome {
 function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $Message
-    if ($script:LogSink) { & $script:LogSink $line } else { Write-Host $line }
+    if ($script:LogSink) { & $script:LogSink $line }
+    # 同时镜像到控制台：install.bat 的终端窗口也能看到安装进度
+    Write-Host $line
 }
 $script:LogSink = $null
 

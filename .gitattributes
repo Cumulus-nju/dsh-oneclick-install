@@ -1,0 +1,3 @@
+# Windows batch files: keep CRLF in the repository so raw/zip
+# downloads work even when double-clicked without conversion.
+*.bat -text

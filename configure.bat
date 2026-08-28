@@ -1,8 +1,40 @@
 @echo off
+setlocal EnableExtensions
 title DeepSeek Harness - Configure
+cd /d "%~dp0"
+
 rem ============================================================
-rem  重新打开配置窗口：修改 API Key / Base URL / 推理强度
-rem  （dsh 每次请求实时解析凭证与设置，保存后立即生效）
+rem  Re-open the config window: change API key / base URL /
+rem  reasoning effort / model. Settings take effect immediately.
 rem ============================================================
-powershell -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0install.ps1" -ConfigureOnly %*
-if errorlevel 1 pause
+
+if not exist "%~dp0install.ps1" (
+    echo.
+    echo [ERROR] install.ps1 not found next to configure.bat.
+    echo         Keep configure.bat and install.ps1 in the same folder.
+    echo.
+    pause
+    exit /b 1
+)
+
+rem --- Remove the "downloaded from the internet" block, if any ---
+powershell.exe -NoProfile -Command "Unblock-File -Path '%~dp0install.ps1' -ErrorAction SilentlyContinue" >nul 2>&1
+
+echo ================================================================
+echo  DeepSeek Harness - configure existing installation
+echo  Folder: %~dp0
+echo ================================================================
+echo.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "%~dp0install.ps1" -ConfigureOnly %*
+set "EXITCODE=%ERRORLEVEL%"
+
+echo.
+if "%EXITCODE%"=="0" (
+    echo [OK] Configuration saved.
+) else (
+    echo [ERROR] Configure exited with code %EXITCODE%. See log above.
+)
+echo.
+pause
+exit /b %EXITCODE%
