@@ -694,6 +694,7 @@ function New-DesktopShortcut {
         $ico = Join-Path $DshHome 'launchers\deepseek.ico'
         if (Test-Path $ico) { $lnk.IconLocation = "$ico,0" }
         $lnk.Save()
+        if (-not (Test-Path $lnkPath)) { throw "快捷方式文件未生成：$lnkPath" }
         Write-Log "已创建桌面快捷方式：$lnkPath"
         return $true
     } catch {
@@ -811,7 +812,11 @@ function Invoke-InstallFlow {
     if (-not $OnlyConfig) {
         Install-Launchers -DshHome $dshHome | Out-Null
         if ($MakeShortcut -and -not $NoShortcut) {
-            New-DesktopShortcut -DshHome $dshHome | Out-Null
+            if (New-DesktopShortcut -DshHome $dshHome) {
+                $summary += "桌面快捷方式已创建"
+            } else {
+                $summary += '桌面快捷方式创建失败（不影响使用；可手动在桌面建一个指向 launchers\dsh-tui.bat 的快捷方式）'
+            }
         }
     }
 
@@ -1014,6 +1019,14 @@ function Show-ConfigWindow {
                        "凭证文件: $($st.CredsPath)`n`n" +
                        "使用说明（/btw 等指令速查）：仓库 docs/使用说明.md`n" +
                        "提示：以后改 API Key 可重新运行 install.bat，或双击 configure.bat。"
+                # 汇总同时镜像到终端：install.bat 窗口里也能看到安装结果与快捷方式位置
+                try {
+                    [Console]::WriteLine('')
+                    [Console]::WriteLine('==== 安装完成 ====')
+                    [Console]::WriteLine($st.Summary)
+                    [Console]::WriteLine("DSH 家目录: $($st.DshHome)")
+                    [Console]::WriteLine("桌面快捷方式: $(Join-Path ([Environment]::GetFolderPath('Desktop')) 'DeepSeek Harness TUI.lnk')（若不存在，请看上方日志中的快捷方式相关行）")
+                } catch { }
                 [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 一键安装', 'OK', 'Information') | Out-Null
                 if ($chkLaunch.Checked -and -not $OnlyConfig -and $st.DshHome) {
                     $bat = Join-Path $st.DshHome 'launchers\dsh-tui.bat'
