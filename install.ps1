@@ -57,6 +57,10 @@ $DEFAULT_BASE_URL = 'https://api.deepseek.com'
 # dsh-tui 默认（稳定）版本。上游 stable 线推进时更新这里 + param 默认值 + GUI 下拉文案 + README。
 $DEFAULT_TUI_VERSION = '0.9.3'
 
+# ---- 离线安装包模式（检测放在 Write-Log 定义之后，见下方 Init-OfflineDetection）----
+$script:OfflineRoot = $null
+$script:OfflineDesc = ''
+
 #region 基础工具
 function Get-DshHome {
     if ($DshHome -ne "") { return $DshHome.TrimEnd('\') }
@@ -73,6 +77,87 @@ function Write-Log {
     # GUI 模式的终端镜像由 UI 定时器统一做（见 Show-ConfigWindow）。
 }
 $script:LogSink = $null
+
+# ---- 离线安装包检测 ------------------------------------------------------------
+# 仓库里带 offline/ 目录（由 tools/build-offline-package.ps1 生成的绿色快照）时，
+# Node.js / npm 全局包 / TUI profile 均从本地快照复制，全程不访问 npm 源；
+# API Key 校验与 TUI 使用仍需要联网（DeepSeek 接口）。
+if (Test-Path (Join-Path $PSScriptRoot 'offline\manifest.json')) {
+    $script:OfflineRoot = Join-Path $PSScriptRoot 'offline'
+    $script:OfflineManifestFiles = $null
+    try {
+        $offManifest = Get-Content (Join-Path $script:OfflineRoot 'manifest.json') -Raw | ConvertFrom-Json
+        if ($offManifest.platform -and $offManifest.platform -ne 'win32-x64') {
+            Write-Host "警告：离线包平台为 $($offManifest.platform)，本机为 win32-x64，可能无法使用（继续尝试）"
+        }
+        $script:OfflineDesc = "离线安装包（Node $($offManifest.node) + dsh $($offManifest.packages.'@deepseek-ai/dsh') + dsh-tui $($offManifest.packages.'@deepseek-harness-tui/dsh-tui')）"
+        $script:OfflineManifestFiles = $offManifest.files
+    } catch {
+        $script:OfflineDesc = '离线安装包（manifest 解析失败，仍尝试使用）'
+    }
+}
+
+# 复制离线快照目录。用 robocopy：npm 深嵌套依赖里有超过 260 字符的超长路径，
+# PowerShell 的 Copy-Item / Remove-Item 会失败；robocopy 支持长路径并保留相对结构。
+# 删除路径（目录或文件）。rmdir 只删目录；文件用 del /f。均走 cmd，兼容超长路径。
+function Remove-Tree {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $true }
+    try {
+        # \\?\ 前缀让 cmd 走 Win32 长路径 API（npm 依赖树有 260+ 字符路径，
+        # 不带前缀的 rmdir /s /q 会中途失败并保留部分目录，返回码 1）
+        $isFile = Test-Path $Path -PathType Leaf
+        # 注意：rmdir 不支持 /f（会报 Invalid switch）；只有 del 支持
+        if ($isFile) {
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'del', '/f', '/s', '/q', "`"\\?\$Path`"") -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        } else {
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', 'rmdir', '/s', '/q', "`"\\?\$Path`"") -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        }
+        if ($p.ExitCode -ne 0) { return $false }
+        # 句柄释放可能有延迟：最多等 3 秒再确认
+        for ($i = 0; $i -lt 6; $i++) {
+            if (-not (Test-Path $Path)) { return $true }
+            Start-Sleep -Milliseconds 500
+        }
+        return $false
+    } catch {
+        try { Remove-Item $Path -Recurse -Force -ErrorAction Stop; return (-not (Test-Path $Path)) } catch { return $false }
+    }
+}
+
+# 对照 manifest 校验复制结果的文件数（防中断/损坏导致快照不全）。
+# 离线包解压时被截断、拷 U 盘出错等场景下尽早暴露问题，而不是装到一半才发现。
+function Test-CopiedTreeComplete {
+    param([string]$Dest, [string]$Section)
+    $files = Get-ChildItem $Dest -Recurse -File -ErrorAction SilentlyContinue
+    $count = @($files).Count
+    $size = ($files | Measure-Object Length -Sum).Sum
+    $exp = $script:OfflineManifestFiles.$Section
+    if ($exp -and $exp.count -and $exp.count -gt 0) {
+        if ($count -ne $exp.count -or [int64]$size -ne [int64]$exp.size) {
+            Write-Log "完整性校验失败：$Section 复制后 $count 个文件 / $size 字节，manifest 应为 $($exp.count) 个 / $($exp.size) 字节"
+            return $false
+        }
+    }
+    return $true
+}
+
+function Copy-OfflineTree {
+    param([string]$Source, [string]$Dest, [string]$Label, [string]$Section = '')
+    if (-not (Test-Path $Source)) { Write-Log "$Label 快照缺失：$Source"; return $false }
+    if (-not (Remove-Tree $Dest)) { Write-Log "旧 $Label 目录删除失败：$Dest"; return $false }
+    $parent = Split-Path $Dest -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    try {
+        Invoke-Native { robocopy $Source $Dest /E /COPY:DAT /R:0 /W:0 /NFL /NDL /NJH /NP 2>&1 } | Out-Null
+    } catch {
+        Write-Log "复制 $Label 失败：$($_.Exception.Message)"
+        return $false
+    }
+    if ($LASTEXITCODE -ge 8) { Write-Log "$Label 复制失败（robocopy 退出码 $LASTEXITCODE）"; return $false }
+    if ($Section -ne '' -and -not (Test-CopiedTreeComplete -Dest $Dest -Section $Section)) { return $false }
+    return $true
+}
 
 # ---- GUI 后台安装基础设施 --------------------------------------------------
 # Windows PowerShell 5.1 的 BackgroundWorker 事件回调跑在没有 runspace 的
@@ -222,8 +307,14 @@ function Add-ToUserPath {
         $newPath = if ($userPath.Trim() -eq '') { $Dir } else { $userPath.TrimEnd(';') + ';' + $Dir }
         [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         Write-Log "已将 $Dir 加入用户 PATH"
-        $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-        $env:Path = ($machine + ';' + [Environment]::GetEnvironmentVariable('Path', 'User'))
+    }
+    # 进程内 PATH：新目录前置（machine PATH 里可能有旧版 node，排前面会遮蔽新装的便携版）
+    $cur = $env:Path
+    if ($cur) {
+        $parts = $cur -split ';' | Where-Object { $_ -ne '' -and $_ -ne $Dir }
+        $env:Path = ($Dir + ';' + ($parts -join ';'))
+    } else {
+        $env:Path = $Dir
     }
 }
 #endregion
@@ -231,6 +322,22 @@ function Add-ToUserPath {
 #region Node.js / pnpm / Harness 安装
 function Install-Node {
     Write-Log '未检测到满足要求的 Node.js（需要 ^22.19 或 >=24），开始自动安装…'
+
+    # 0) 离线安装包：offline/node 里的便携版目录（优先，无需联网）
+    if ($script:OfflineRoot) {
+        $offNode = Join-Path $script:OfflineRoot 'node'
+        if (Test-Path (Join-Path $offNode 'node.exe')) {
+            Write-Log '发现离线 Node.js 快照，正在复制便携版（免管理员）…'
+            $dest = Join-Path $env:LOCALAPPDATA 'Programs\node'
+            if (Copy-OfflineTree -Source $offNode -Dest $dest -Label 'Node.js' -Section 'node') {
+                $env:Path = "$dest;$env:Path"
+                Add-ToUserPath $dest
+                Write-Log "Node.js 便携版已安装到 $dest"
+                return $true
+            }
+            Write-Log 'Node.js 快照复制失败，尝试 tools/ 离线包…'
+        }
+    }
 
     # 1) 仓库 tools/ 目录里的离线安装包
     $toolsDir = Join-Path $PSScriptRoot 'tools'
@@ -294,9 +401,9 @@ function Expand-PortableNodeZip {
         [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $extract)
         $inner = Get-ChildItem $extract -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } | Select-Object -First 1
         if (-not $inner) { Write-Log '压缩包内未找到 node.exe'; return $false }
-        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+        if (-not (Remove-Tree $dest)) { Write-Log "旧 Node.js 目录删除失败：$dest"; return $false }
         Move-Item $inner.FullName $dest
-        Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Tree $extract | Out-Null
         $env:Path = "$dest;$env:Path"
         Add-ToUserPath $dest
         Write-Log "Node.js 便携版已安装到 $dest"
@@ -355,8 +462,64 @@ function Update-NpmTo12 {
     return $null
 }
 
+# 离线快照：npm 全局包（含全部依赖与平台二进制，如 koffi/node-pty/sharp 的 win-x64 原生模块）
+function Install-OfflineGlobalPackages {
+    $srcRoot = Join-Path $script:OfflineRoot 'global-npm'
+    $dstRoot = Join-Path $env:APPDATA 'npm'
+    foreach ($pkg in @('@deepseek-ai\dsh', '@deepseek-harness-tui\dsh-tui', 'pnpm')) {
+        $src = Join-Path $srcRoot ("node_modules\" + $pkg)
+        $dst = Join-Path $dstRoot ("node_modules\" + $pkg)
+        if (-not (Test-Path $src)) { Write-Log "离线快照缺少包 $pkg（请重新生成离线包）"; return $false }
+        if (-not (Copy-OfflineTree -Source $src -Dest $dst -Label $pkg)) { return $false }    }
+    # shim（npm 全局命令：dsh / dsh-tui / pnpm 的 .cmd / .ps1 / 无后缀脚本）
+    foreach ($name in @('dsh', 'dsh-tui', 'pnpm')) {
+        foreach ($ext in @('.cmd', '.ps1', '')) {
+            $src = Join-Path $srcRoot ($name + $ext)
+            $dst = Join-Path $dstRoot ($name + $ext)
+            if (Test-Path $src) {
+                if (-not (Remove-Tree $dst)) { Write-Log "$name$ext shim 删除失败：$dst"; return $false }
+                try { Copy-Item $src $dst -Force -ErrorAction Stop } catch { Write-Log "$name$ext shim 复制失败：$($_.Exception.Message)"; return $false }
+                # 校验：禁止空/零字节文件（中断复制会产生占位文件）
+                $len = (Get-Item $dst).Length
+                if ($len -le 0) { Write-Log "$name$ext shim 校验失败（0 字节）"; return $false }
+            }
+        }
+    }
+    # 校验：包存在 + 入口文件存在（复制中断/损坏时入口缺失）
+    $markers = @(
+        @{ Dir = Join-Path $dstRoot 'node_modules\@deepseek-ai\dsh'; Marker = 'lib\bin.js'; Name = '@deepseek-ai/dsh' },
+        @{ Dir = Join-Path $dstRoot 'node_modules\@deepseek-harness-tui\dsh-tui'; Marker = 'bin\dsh-tui.js'; Name = '@deepseek-harness-tui/dsh-tui' },
+        @{ Dir = Join-Path $dstRoot 'node_modules\pnpm'; Marker = 'bin\pnpm.mjs'; Name = 'pnpm' }
+    )
+    foreach ($m in $markers) {
+        if (-not (Test-Path (Join-Path $m.Dir 'package.json'))) {
+            Write-Log "全局包快照校验失败（$($m.Name) 缺失）"
+            return $false
+        }
+        if (-not (Test-Path (Join-Path $m.Dir $m.Marker))) {
+            Write-Log "全局包快照校验失败（$($m.Name) 入口文件缺失）"
+            return $false
+        }
+    }
+    if (-not (Test-Path (Join-Path $dstRoot 'dsh-tui.cmd'))) {
+        Write-Log '全局包快照校验失败（dsh-tui.cmd 缺失）'
+        return $false
+    }
+    Write-Log "npm 全局包离线复制完成（$script:OfflineDesc）"
+    return $true
+}
+
 function Install-HarnessPackages {
     param([string]$TuiVersion)
+    # 离线快照：不用 npm，直接把全局包（含依赖与平台二进制）复制到 %APPDATA%\npm
+    if ($script:OfflineRoot) {
+        Write-Log '检测到离线安装包，跳过 npm 安装（从快照复制全局包）…'
+        if (Install-OfflineGlobalPackages) {
+            Add-ToUserPath (Join-Path $env:APPDATA 'npm')
+            return 'ok'
+        }
+        return 'fail'
+    }
     $npmCmd = (Resolve-NodeInfo).NpmCmd
     if (-not $npmCmd) {
         $npmCmd = Resolve-CmdShim 'npm'
@@ -458,6 +621,11 @@ function Ensure-Pnpm {
         }
     }
     Write-Log '未检测到 pnpm（或版本过低，需要 >=10），正在安装…'
+    # 离线模式无法通过 npm 联网安装 pnpm（快照复制失败时直接报错）
+    if ($script:OfflineRoot) {
+        Write-Log '离线模式未找到 pnpm（快照复制可能不完整），请重新解压安装包后重试'
+        return $false
+    }
     $npmCmd = Resolve-CmdShim 'npm'
     if (-not $npmCmd) { return $false }
     try {
@@ -504,6 +672,39 @@ function Fix-PnpmAllowBuilds {
 
 function Install-TuiProfile {
     param([string]$DshHome, [string]$TuiVersion)
+    # 离线快照：直接复制 profile（node_modules 已带全部 bundle 依赖与平台二进制）
+    if ($script:OfflineRoot) {
+        $src = Join-Path $script:OfflineRoot 'profile\dsh-tui'
+        $dst = Join-Path $DshHome "profiles\$PROFILE_NAME"
+        if (-not (Test-Path (Join-Path $src 'package.json'))) {
+            Write-Log '离线快照缺少 TUI profile（请重新生成离线包）'
+            return $false
+        }
+        Write-Log "离线模式：从快照复制 TUI profile 到 $dst …"
+        # 保留用户已有覆盖层：先备份再整体替换，复制后恢复
+        $backupPatch = $null
+        $existingPatch = Join-Path $dst 'cordis.patch.yml'
+        if (Test-Path $existingPatch) {
+            try { $backupPatch = [System.IO.File]::ReadAllText($existingPatch) } catch { $backupPatch = $null }
+        }
+        if (-not (Copy-OfflineTree -Source $src -Dest $dst -Label 'TUI profile' -Section 'profile')) { return $false }
+        if ($backupPatch) {
+            try { [System.IO.File]::WriteAllText($existingPatch, $backupPatch, (New-Object System.Text.UTF8Encoding($false))) } catch { }
+            Write-Log '已恢复你原有的 TUI 覆盖层配置'
+        }
+        $pkgJson = Join-Path $dst 'package.json'
+        if (Test-Path $pkgJson) {
+            $m = Get-Content $pkgJson -Raw | ConvertFrom-Json
+            if ($m.dsh.profile.bundles -contains $TUI_PACKAGE) {
+                Write-Log "TUI profile 离线复制完成（bundle 校验通过）"
+                return $true
+            }
+            Write-Log 'TUI profile 快照校验失败（bundle 层缺少 dsh-tui）'
+            return $false
+        }
+        Write-Log 'TUI profile 快照校验失败（package.json 缺失）'
+        return $false
+    }
     $dshCmd = Resolve-CmdShim 'dsh'
     if (-not $dshCmd) { Write-Log '未找到 dsh 命令'; return $false }
     Write-Log "正在创建 profile '$PROFILE_NAME' 并安装 $TUI_PACKAGE（首次需联网下载，请耐心等待）…"

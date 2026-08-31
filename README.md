@@ -92,12 +92,26 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1 -RemoveAll -PurgeHome # �
 
 ## 离线安装
 
-把 Node.js 安装包放进 `tools/` 目录即可离线安装（安装器自动检测，优先 zip，免管理员）：
+### 方式一：tools/ 放 Node.js 安装包（npm 包仍在线）
+
+把 Node.js 安装包放进 `tools/` 目录即可免下载 Node（安装器自动检测，优先 zip，免管理员）：
 
 - `node-v22.x.y-win-x64.zip`（推荐，便携版，解压即用）
 - 或 `node-v22.x.y-x64.msi`
 
 > `tools/` 下的安装包已被 `.gitignore` 忽略，不会提交到仓库。dsh / dsh-tui 的 npm 包仍需要联网安装。
+
+### 方式二：完全离线安装包（绿色快照，全程无网可装）
+
+仓库带 `offline/` 目录即为**完全离线包**（由 `tools/build-offline-package.ps1` 生成，包含 Node.js、dsh、dsh-tui、pnpm 及全部依赖和 win32-x64 原生模块）：
+
+- 安装器检测到 `offline/manifest.json` 后，Node.js / npm 全局包 / TUI profile 全部**从本地快照复制**，不访问任何 npm 源；
+- 只需填入 DeepSeek API Key（API Key 校验与 TUI 运行仍需联网访问 DeepSeek 接口）；
+- 支持**无 Node 环境**（自动装便携版免管理员）和**已有 Node 环境**（复用系统 Node）两种场景；
+- 复制后按 `manifest.json` 的 `files` 表做**文件数 + 总字节完整性校验**，快照损坏（如 U 盘拷坏）会明确报错并回退联网安装；
+- 支持重复安装，保留你已有的 TUI 配置覆盖层。
+
+> 离线包目录体积约 500 MB，`offline/` 已被 `.gitignore` 忽略，不会随仓库提交；发布时单独分发（zip 或整目录拷贝）。
 
 ## 常见问题
 
@@ -126,7 +140,12 @@ dsh-oneclick-install/
 ├── launchers/dsh-tui.bat # TUI 启动器（安装时复制到 ~/.dsh/launchers/）
 ├── assets/deepseek.ico   # 快捷方式图标
 ├── docs/使用说明.md       # 安装过程 + TUI 指令速查（/btw 等）
-├── tools/                # 可选：放 Node.js 离线安装包
+├── tools/                # 可选：放 Node.js 离线安装包（.gitignore）
+├── offline/              # 可选：完全离线包绿色快照（.gitignore）
+│   ├── node/             # Node.js v22 便携版（含 npm/npx/corepack）
+│   ├── global-npm/       # dsh / dsh-tui / pnpm 全局包（含全部依赖）
+│   ├── profile/          # dsh-tui profile（含 node_modules）
+│   └── manifest.json     # 版本与文件数清单（安装时完整性校验）
 └── README.md
 ```
 

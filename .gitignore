@@ -1,6 +1,9 @@
 # 离线安装包（体积大，不提交）
 tools/*.msi
 tools/*.zip
+offline/
+offline-package/
+*.zip
 
 # 日志 / 系统文件
 *.log
