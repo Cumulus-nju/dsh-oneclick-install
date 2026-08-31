@@ -1,6 +1,8 @@
 @echo off
+title DeepSeek Harness TUI Configure
+rem Set Unicode window title "DeepSeek Harness TUI Configure" via base64 (keeps this file pure ASCII)
+powershell.exe -NoProfile -EncodedCommand JABIAG8AcwB0AC4AVQBJAC4AUgBhAHcAVQBJAC4AVwBpAG4AZABvAHcAVABpAHQAbABlAD0AJwBEAGUAZQBwAFMAZQBlAGsAIABIAGEAcgBuAGUAcwBzACAAVABVAEkAIABNkW5/GoEsZycA >nul 2>&1
 setlocal EnableExtensions
-title DeepSeek Harness - Configure
 cd /d "%~dp0"
 
 rem ============================================================

@@ -25,9 +25,17 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $lnk = Join-Path $desktop 'DeepSeek Harness TUI.lnk'
 if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host "已删除快捷方式: $lnk" }
 
-# 2) 启动器
-$bat = Join-Path $dshHome 'launchers\dsh-tui.bat'
-if (Test-Path $bat) { Remove-Item $bat -Force; Write-Host "已删除启动器: $bat" }
+# 2) 启动器（bat + 图标），并清理启动器目录
+$launcherDir = Join-Path $dshHome 'launchers'
+if (Test-Path $launcherDir) {
+    foreach ($f in @('dsh-tui.bat', 'deepseek.ico')) {
+        $fp = Join-Path $launcherDir $f
+        if (Test-Path $fp) { Remove-Item $fp -Force; Write-Host "已删除: $fp" }
+    }
+    # 目录里若只剩用户自己的文件则保留；否则删除空目录
+    Remove-Item $launcherDir -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $launcherDir)) { Write-Host "已清理启动器目录: $launcherDir" }
+}
 
 # 3) npm 卸载
 if ($RemoveAll) {

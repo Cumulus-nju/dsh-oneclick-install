@@ -1,6 +1,6 @@
 ﻿<#
 ================================================================================
- DeepSeek Harness TUI 一键安装 / 配置脚本
+ DeepSeek Harness TUI 安装脚本（一键安装）/ 配置脚本
 --------------------------------------------------------------------------------
  对应 DeepSeek Harness 官方连接 DeepSeek API 的现有方式（TUI 版）：
    1. 检查 Node.js（要求 ^22.19 || >=24；缺失/过旧则自动安装最新 LTS 便携版）
@@ -14,8 +14,9 @@
    6. 写入凭证 $DSH_HOME/.credentials.yaml 的 DEEPSEEK_API_KEY
       （dsh-llm-deepseek 每次请求实时解析，改完立即生效，无需重启）
    7. 可选写入 $DSH_HOME/settings.yaml 的 llm-deepseek 段（baseURL / 推理强度）
-   8. 流畅模式：向 $DSH_HOME/profiles/dsh-tui/cordis.patch.yml 写入性能优化覆盖层
-      （工作状态行刷新 500ms -> 1500ms、轻量动画帧，减少卡顿）
+   8. 向 $DSH_HOME/profiles/dsh-tui/cordis.patch.yml 写入 TUI 覆盖层：
+      默认模型 / 推理强度（独立于流畅模式勾选，configure.bat 也可修改）+
+      流畅模式（工作状态行刷新 500ms -> 1500ms、轻量动画帧，减少卡顿）
    9. 复制启动器、创建桌面快捷方式、启动 TUI
 
  用法：
@@ -31,7 +32,7 @@ param(
     [string]$ApiKey = "",       # Headless 模式必须提供
     [string]$BaseUrl = "https://api.deepseek.com",
     [string]$ReasoningEffort = "",   # off|low|high|max；留空则不改动默认值
-    [string]$Model = "",         # 默认模型：留空=deepseek-v4-flash；可填任意模型名
+    [string]$Model = "",         # 默认模型：留空=deepseek-v4-flash；可填任意模型名（需在该接口的模型列表中，否则 TUI 会回落默认）
     [string]$TuiVersion = '0.9.3',  # dsh-tui 版本：'0.9.3'（稳定版，默认）或 'latest'（尝鲜 beta）。上游发新稳定版后此默认值同步更新
     [switch]$NoShortcut,        # 不创建桌面快捷方式
     [switch]$NoLaunch,          # 安装完成后不自动启动 TUI
@@ -39,7 +40,7 @@ param(
     [switch]$SkipNpmInstall,    # 跳过 npm 全局安装
     [switch]$SkipTuiSetup,      # 跳过 pnpm 检查与 profile 安装（调试用）
     [switch]$NoValidate,        # 跳过 API Key 在线校验
-    [bool]$SmoothMode = $true,  # 流畅模式：写入性能优化覆盖层
+    [bool]$SmoothMode = $true,  # 流畅模式：写入性能优化项（状态行刷新率/动画帧）；默认模型与推理强度不受此开关影响
     [string]$DshHome = "",      # 覆盖 DSH 家目录（默认 $env:DSH_HOME 或 ~/.dsh）
     [switch]$LibraryMode        # 内部使用：仅加载函数不进入入口（GUI 后台 runspace 点源调用）
 )
@@ -602,12 +603,16 @@ function Set-SettingsSection {
     Write-YamlLines -Path $Path -Lines $lines
 }
 
-# 流畅模式优化覆盖层：$DSH_HOME/profiles/dsh-tui/cordis.patch.yml
-#  - working-activity.publishIntervalMs: 500 -> 1500（工作状态行刷新率降为 ~0.7Hz）
-#  - dsh-tui.activityFrames: claude -> dots（轻量动画帧）
+# TUI 配置覆盖层：$DSH_HOME/profiles/dsh-tui/cordis.patch.yml
+#  - 默认模型 / 推理强度：写入 dsh-tui 行的 config（不依赖流畅模式勾选）
+#  - 流畅模式：working-activity.publishIntervalMs 500 -> 1500（工作状态行刷新率降为 ~0.7Hz）
+#    + dsh-tui.activityFrames: claude -> dots（轻量动画帧）
+# 覆盖层按 id 整块替换 config（patch 语义），因此必须重述包内默认键
+# （fullscreen: true、effort: max、preset/workspace/sessionId 环境透传），
+# 否则这些默认值会被悄悄丢掉（如 fullscreen 从 true 变 false、effort 从 max 变高）。
 # 已存在的用户覆盖层（无本脚本标记）不覆盖，尊重用户自定义。
-function Write-PerfOverlay {
-    param([string]$DshHome, [string]$Effort, [string]$Model)
+function Write-TuiOverlay {
+    param([string]$DshHome, [string]$Effort, [string]$Model, [bool]$Smooth)
     $patchPath = Join-Path $DshHome "profiles\$PROFILE_NAME\cordis.patch.yml"
     $dir = Split-Path $patchPath -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
@@ -619,36 +624,48 @@ function Write-PerfOverlay {
                 $t = $_.Trim(); $t -ne '' -and -not $t.StartsWith('#')
             }) -join "`n"
             if ($body.Trim() -ne '' -and $body.Trim() -ne '[]') {
-                Write-Log "检测到已有自定义覆盖层 $patchPath，跳过流畅模式写入（尊重你的配置）"
+                Write-Log "检测到已有自定义覆盖层 $patchPath，跳过写入（尊重你的配置；本次选择的模型/推理强度/流畅模式未生效，如需修改请手动编辑该文件）"
                 return $false
             }
         }
     }
-    $effortLine = ''
-    if ($Effort -in @('off', 'high', 'max')) { $effortLine = "    effort: $Effort" }
-    $modelLine = ''
-    if ($Model -match '^[A-Za-z0-9_\-\.:]+$') { $modelLine = "    model: $Model" }
     $lines = @(
-        '# 由 dsh-oneclick-install 写入的性能优化覆盖层（流畅模式）',
-        '# 降低工作状态行刷新率并使用轻量动画帧，减少终端重绘卡顿。',
-        '# 删除本文件即可恢复默认（dsh-tui 包自带配置）。',
-        '- id: working-activity',
-        '  config:',
-        '    publishIntervalMs: 1500',
+        '# 由 dsh-oneclick-install 写入的覆盖层：默认模型 / 推理强度 / 流畅模式',
+        '# 模型与推理强度在 dsh-tui 启动时生效；删除本文件即可恢复默认（dsh-tui 包自带配置）。'
+    )
+    if ($Smooth) {
+        $lines += @(
+            '- id: working-activity',
+            '  config:',
+            '    publishIntervalMs: 1500'
+        )
+    }
+    # 覆盖层整块替换 dsh-tui 行的 config，必须重述包内默认键，避免丢默认值
+    $tui = @(
         '- id: dsh-tui',
         '  config:',
-        '    provider: deepseek-official'
+        '    provider: deepseek-official',
+        '    fullscreen: true',
+        '    preset: !!js process.env.DSH_TUI_PRESET ?? undefined',
+        '    workspace: !!js process.env.DSH_TUI_WORKSPACE_TARGET ?? undefined',
+        '    sessionId: !!js process.env.DSH_TUI_RESUME_SESSION ?? process.env.DSH_CC_RESUME_SESSION ?? undefined'
     )
-    if ($modelLine -ne '') { $lines += $modelLine }
-    if ($effortLine -ne '') { $lines += $effortLine }
-    $lines += @(
-        '    activity: true',
-        '    activityFrames: dots',
-        '    contextBar: true',
-        '    fullscreen: false'
-    )
+    # 默认模型：GUI 始终有值；Headless 留空 = 不改动（保持 dsh-tui 默认 deepseek-v4-flash）。
+    # 注意：模型名需在该接口的模型列表中，否则 dsh-tui 会静默回退默认模型。
+    if ($Model -match '^[A-Za-z0-9_\-\.:/+]+$') { $tui += "    model: $Model" }
+    # 推理强度：用户显式选择 off/low/high/max；默认（不改动）时重述包内默认 max
+    $effortVal = if ($Effort -in @('off', 'low', 'high', 'max')) { $Effort } else { 'max' }
+    $tui += "    effort: $effortVal"
+    if ($Smooth) {
+        $tui += @(
+            '    activity: true',
+            '    activityFrames: dots',
+            '    contextBar: true'
+        )
+    }
+    $lines += $tui
     Write-YamlLines -Path $patchPath -Lines $lines
-    Write-Log "已写入流畅模式覆盖层：$patchPath"
+    Write-Log "已写入 TUI 配置覆盖层（模型/推理强度/流畅模式）：$patchPath"
     return $true
 }
 #endregion
@@ -837,13 +854,25 @@ function Invoke-InstallFlow {
         Write-Log "已写入设置：$settingsPath"
     }
 
-    Set-Progress '应用流畅模式' 88
+    Set-Progress '写入 TUI 配置（默认模型 / 推理强度 / 流畅模式）' 88
 
-    # 7) 流畅模式覆盖层
-    if ($Smooth -and -not $OnlyConfig) {
-        if (Write-PerfOverlay -DshHome $dshHome -Effort $Effort -Model $Model) {
-            $summary += '流畅模式已启用'
+    # 7) TUI 覆盖层：默认模型 / 推理强度 / 流畅模式
+    #    模型与推理强度不依赖流畅模式勾选（勾选只控制性能项）；
+    #    configure.bat（-ConfigureOnly）同样写入，用于改模型/推理强度。
+    $overlaySmooth = $Smooth
+    if ($OnlyConfig) {
+        # configure.bat 只改配置：保持已有流畅模式状态（配置窗口里该勾选框不可见）
+        $existingPatch = Join-Path $dshHome "profiles\$PROFILE_NAME\cordis.patch.yml"
+        if (Test-Path $existingPatch) {
+            $overlaySmooth = ((Get-Content $existingPatch -Raw) -match 'publishIntervalMs')
+        } else {
+            $overlaySmooth = $false
         }
+    }
+    if (Write-TuiOverlay -DshHome $dshHome -Effort $Effort -Model $Model -Smooth $overlaySmooth) {
+        if ($overlaySmooth) { $summary += '流畅模式已启用' }
+        if ($Model -match '^[A-Za-z0-9_\-\.:/+]+$') { $summary += "默认模型 $Model" }
+        if ($Effort -in @('off', 'low', 'high', 'max')) { $summary += "推理强度 $Effort" }
     }
 
     Set-Progress '创建启动器与快捷方式' 92
@@ -896,7 +925,7 @@ namespace DshOneClick {
     $script:workerBusy = $false
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = if ($OnlyConfig) { 'DeepSeek Harness TUI - 配置 API' } else { 'DeepSeek Harness TUI - 一键安装' }
+    $form.Text = if ($OnlyConfig) { 'DeepSeek Harness TUI - 配置脚本' } else { 'DeepSeek Harness TUI - 安装脚本' }
     $form.Size = New-Object System.Drawing.Size(600, 620)
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $form.MaximizeBox = $false
@@ -904,7 +933,7 @@ namespace DshOneClick {
     $form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
 
     $lblTitle = New-Object System.Windows.Forms.Label
-    $lblTitle.Text = if ($OnlyConfig) { '修改 DeepSeek Harness TUI 连接配置' } else { 'DeepSeek Harness TUI 一键安装' }
+    $lblTitle.Text = if ($OnlyConfig) { 'DeepSeek Harness TUI 配置脚本' } else { 'DeepSeek Harness TUI 安装脚本' }
     $lblTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 14, [System.Drawing.FontStyle]::Bold)
     $lblTitle.Location = New-Object System.Drawing.Point(16, 14)
     $lblTitle.AutoSize = $true
@@ -1050,7 +1079,7 @@ namespace DshOneClick {
     $tip.SetToolTip($txtKey, '在 platform.deepseek.com → API Keys 创建（sk- 开头）')
     $tip.SetToolTip($txtBase, '默认官方接口；使用 OpenAI 兼容网关/中转时改为自己的地址（如 https://api.deepseek.com/v1）')
     $tip.SetToolTip($cmbTuiVer, '稳定版 0.9.3 低风险；latest 为上游 beta（0.10.0-beta.1），含 /vim、/resume 大改等新特性')
-    $tip.SetToolTip($cmbModel, '默认 deepseek-v4-flash；可直接输入任意模型名')
+    $tip.SetToolTip($cmbModel, '默认 deepseek-v4-flash；可直接输入任意模型名（需在该接口的模型列表中，否则 TUI 会回落默认模型）')
 
     $script:LogSink = { param($line)
         $txtLog.AppendText($line + "`r`n")
@@ -1106,7 +1135,7 @@ namespace DshOneClick {
                     [Console]::WriteLine("DSH 家目录: $($st.DshHome)")
                     [Console]::WriteLine("桌面快捷方式: $(Join-Path ([Environment]::GetFolderPath('Desktop')) 'DeepSeek Harness TUI.lnk')（若不存在，请看上方日志中的快捷方式相关行）")
                 } catch { }
-                [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 一键安装', 'OK', 'Information') | Out-Null
+                [System.Windows.Forms.MessageBox]::Show($form, $msg, 'DeepSeek Harness TUI 安装脚本', 'OK', 'Information') | Out-Null
                 if ($chkLaunch.Checked -and -not $OnlyConfig -and $st.DshHome) {
                     $bat = Join-Path $st.DshHome 'launchers\dsh-tui.bat'
                     if (Test-Path $bat) { Start-Process -FilePath $bat }

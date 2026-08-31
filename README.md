@@ -40,6 +40,7 @@
    - `working-activity.publishIntervalMs`: `500 → 1500`（工作状态行刷新率从 2Hz 降到 ~0.7Hz，这是重绘开销大头）
    - `dsh-tui.activityFrames`: `claude → dots`（轻量动画帧）
    - 其余字段按上游文档重写为默认值，不改变行为
+   - 默认模型与推理强度写在同一个覆盖层文件里，但**不依赖**本勾选——取消「流畅模式」不影响模型/推理强度生效
    - 覆盖层带标记注释，删掉文件即恢复默认；若你自己改过 `cordis.patch.yml`，安装器**不会**覆盖，会在日志中提示。
 3. **可调项**：窗口里可关闭流畅模式；`/settings`（TUI 内）与 `~/.dsh-tui` 下还可用 `DSH_TUI_DISABLE_MOUSE` 等环境变量进一步减负（见上游[配置文档](https://github.com/ccch1mneyyy/dsh-TUI/blob/main/docs/configuration.md)）。
 
@@ -55,7 +56,7 @@
    - **DeepSeek API Key**（必填）：在 [platform.deepseek.com](https://platform.deepseek.com) → API Keys 创建，`sk-` 开头
    - **接口地址 Base URL**（可选）：默认官方 `https://api.deepseek.com`；使用 OpenAI 兼容网关/中转时改成自己的地址（如 `https://api.deepseek.com/v1`）
    - **推理强度 Reasoning Effort**（可选）：`off / low / high / max`，默认不改动
-   - **默认模型 Model**（可选）：默认 `deepseek-v4-flash`，可下拉选 `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp`，也可直接输入任意模型名
+   - **默认模型 Model**（可选）：默认 `deepseek-v4-flash`，可下拉选 `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp`，也可直接输入任意模型名（需在该接口返回的模型列表中，否则 TUI 会忽略并回落默认模型；是否勾选「流畅模式」不影响模型生效）
    - **TUI 版本**（默认稳定版 0.9.3）：可切「尝鲜版 latest」（当前上游 beta 0.10.0-beta.1，含新特性）
    - **流畅模式**（默认勾选）：降低状态行刷新率、轻量动画帧
    - 勾选是否创建桌面快捷方式、是否安装后自动启动
@@ -70,7 +71,7 @@
 
 ### 修改配置
 
-换 API Key / 改接口地址：双击 **`configure.bat`**（只改配置，不重新安装），保存后立即生效。
+换 API Key / 改接口地址 / 默认模型 / 推理强度：双击 **`configure.bat`**（只改配置，不重新安装），保存后下次启动 TUI 生效。
 
 ### 命令行模式（自动化/CI）
 
