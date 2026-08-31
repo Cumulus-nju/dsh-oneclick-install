@@ -867,7 +867,7 @@ namespace DshOneClick {
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = if ($OnlyConfig) { 'DeepSeek Harness TUI - 配置 API' } else { 'DeepSeek Harness TUI - 一键安装' }
-    $form.Size = New-Object System.Drawing.Size(600, 774)
+    $form.Size = New-Object System.Drawing.Size(600, 620)
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $form.MaximizeBox = $false
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
@@ -881,74 +881,63 @@ namespace DshOneClick {
 
     $lblHint = New-Object System.Windows.Forms.Label
     $lblHint.Text = if ($OnlyConfig) {
-        '填写以下信息保存即可，修改立即生效（dsh 每次请求实时解析凭证与设置，无需重启）。'
+        '修改配置立即生效（dsh 每次请求实时解析凭证与设置，无需重启）。'
     } else {
-        '只需填写 DeepSeek API Key。脚本自动安装 Node.js、dsh、dsh-tui（下方可选稳定/尝鲜版）、' +
-        'pnpm 并创建 TUI profile，校验 Key 后启动终端界面。'
+        '只需填写 DeepSeek API Key，其余全部自动完成。'
     }
     $lblHint.ForeColor = [System.Drawing.Color]::Gray
-    $lblHint.Location = New-Object System.Drawing.Point(16, 46)
-    $lblHint.Size = New-Object System.Drawing.Size(550, 42)
+    $lblHint.Location = New-Object System.Drawing.Point(16, 40)
+    $lblHint.AutoSize = $true
 
     $grpConn = New-Object System.Windows.Forms.GroupBox
     $grpConn.Text = '连接配置（对应 dsh-llm-deepseek 的凭证与设置）'
-    $grpConn.Location = New-Object System.Drawing.Point(16, 98)
-    $grpConn.Size = New-Object System.Drawing.Size(552, 205)
+    $grpConn.Location = New-Object System.Drawing.Point(16, 68)
+    $grpConn.Size = New-Object System.Drawing.Size(552, 158)
 
     $lblKey = New-Object System.Windows.Forms.Label
     $lblKey.Text = 'DeepSeek API Key *'
-    $lblKey.Location = New-Object System.Drawing.Point(14, 30)
+    $lblKey.Location = New-Object System.Drawing.Point(14, 26)
     $lblKey.AutoSize = $true
     $txtKey = New-Object System.Windows.Forms.TextBox
-    $txtKey.Location = New-Object System.Drawing.Point(160, 26)
+    $txtKey.Location = New-Object System.Drawing.Point(160, 22)
     $txtKey.Size = New-Object System.Drawing.Size(372, 23)
     $txtKey.PasswordChar = '●'
-    $lblKeyNote = New-Object System.Windows.Forms.Label
-    $lblKeyNote.Text = '在 platform.deepseek.com → API Keys 创建（sk- 开头）'
-    $lblKeyNote.ForeColor = [System.Drawing.Color]::Gray
-    $lblKeyNote.Location = New-Object System.Drawing.Point(160, 52)
-    $lblKeyNote.AutoSize = $true
 
     $lblBase = New-Object System.Windows.Forms.Label
     $lblBase.Text = '接口地址 Base URL'
-    $lblBase.Location = New-Object System.Drawing.Point(14, 82)
+    $lblBase.Location = New-Object System.Drawing.Point(14, 56)
     $lblBase.AutoSize = $true
     $txtBase = New-Object System.Windows.Forms.TextBox
     $txtBase.Text = 'https://api.deepseek.com'
-    $txtBase.Location = New-Object System.Drawing.Point(160, 78)
+    $txtBase.Location = New-Object System.Drawing.Point(160, 52)
     $txtBase.Size = New-Object System.Drawing.Size(372, 23)
-    $lblBaseNote = New-Object System.Windows.Forms.Label
-    $lblBaseNote.Text = '默认官方接口；使用 OpenAI 兼容网关/中转时可改为自己的地址（如 .../v1）'
-    $lblBaseNote.ForeColor = [System.Drawing.Color]::Gray
-    $lblBaseNote.Location = New-Object System.Drawing.Point(160, 104)
-    $lblBaseNote.AutoSize = $true
 
     $lblEffort = New-Object System.Windows.Forms.Label
     $lblEffort.Text = '推理强度 Reasoning Effort'
-    $lblEffort.Location = New-Object System.Drawing.Point(14, 136)
+    $lblEffort.Location = New-Object System.Drawing.Point(14, 86)
     $lblEffort.AutoSize = $true
     $cmbEffort = New-Object System.Windows.Forms.ComboBox
     $cmbEffort.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    $cmbEffort.Location = New-Object System.Drawing.Point(160, 132)
+    $cmbEffort.Location = New-Object System.Drawing.Point(160, 82)
     $cmbEffort.Size = New-Object System.Drawing.Size(150, 23)
     foreach ($it in @('默认（不改动）', 'off', 'low', 'high', 'max')) { [void]$cmbEffort.Items.Add($it) }
     $cmbEffort.SelectedIndex = 0
 
     $lblModel = New-Object System.Windows.Forms.Label
     $lblModel.Text = '默认模型 Model'
-    $lblModel.Location = New-Object System.Drawing.Point(14, 176)
+    $lblModel.Location = New-Object System.Drawing.Point(14, 116)
     $lblModel.AutoSize = $true
     $cmbModel = New-Object System.Windows.Forms.ComboBox
     $cmbModel.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDown   # 可编辑，支持自定义模型名
-    $cmbModel.Location = New-Object System.Drawing.Point(160, 172)
+    $cmbModel.Location = New-Object System.Drawing.Point(160, 112)
     $cmbModel.Size = New-Object System.Drawing.Size(372, 23)
     foreach ($it in @('deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp')) { [void]$cmbModel.Items.Add($it) }
     $cmbModel.Text = 'deepseek-v4-flash'
 
     $grpOpt = New-Object System.Windows.Forms.GroupBox
     $grpOpt.Text = '安装选项'
-    $grpOpt.Location = New-Object System.Drawing.Point(16, 311)
-    $grpOpt.Size = New-Object System.Drawing.Size(552, 142)
+    $grpOpt.Location = New-Object System.Drawing.Point(16, 234)
+    $grpOpt.Size = New-Object System.Drawing.Size(552, 132)
     $lblTuiVer = New-Object System.Windows.Forms.Label
     $lblTuiVer.Text = 'TUI 版本'
     $lblTuiVer.Location = New-Object System.Drawing.Point(14, 24)
@@ -956,39 +945,34 @@ namespace DshOneClick {
     $cmbTuiVer = New-Object System.Windows.Forms.ComboBox
     $cmbTuiVer.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $cmbTuiVer.Location = New-Object System.Drawing.Point(110, 20)
-    $cmbTuiVer.Size = New-Object System.Drawing.Size(280, 23)
+    $cmbTuiVer.Size = New-Object System.Drawing.Size(260, 23)
     [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("稳定版 0.9.3（推荐）", "0.9.3")))
     [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("尝鲜版 latest（0.10.0-beta.1）", "latest")))
     $cmbTuiVer.SelectedIndex = if ($TuiVersion -eq 'latest') { 1 } else { 0 }
-    $lblTuiVerNote = New-Object System.Windows.Forms.Label
-    $lblTuiVerNote.Text = '稳定版低风险；latest 为上游 beta，含新特性'
-    $lblTuiVerNote.ForeColor = [System.Drawing.Color]::Gray
-    $lblTuiVerNote.Location = New-Object System.Drawing.Point(110, 44)
-    $lblTuiVerNote.AutoSize = $true
     $chkSmooth = New-Object System.Windows.Forms.CheckBox
-    $chkSmooth.Text = '流畅模式（降低状态行刷新率 500ms→1500ms、轻量动画帧，减少卡顿）'
-    $chkSmooth.Location = New-Object System.Drawing.Point(14, 70)
+    $chkSmooth.Text = '流畅模式（降低状态行刷新率，减少卡顿）'
+    $chkSmooth.Location = New-Object System.Drawing.Point(14, 46)
     $chkSmooth.Size = New-Object System.Drawing.Size(520, 20)
     $chkSmooth.Checked = $true
     $chkShortcut = New-Object System.Windows.Forms.CheckBox
-    $chkShortcut.Text = '创建桌面快捷方式（一键启动终端 TUI）'
-    $chkShortcut.Location = New-Object System.Drawing.Point(14, 96)
+    $chkShortcut.Text = '创建桌面快捷方式'
+    $chkShortcut.Location = New-Object System.Drawing.Point(14, 68)
     $chkShortcut.AutoSize = $true
     $chkShortcut.Checked = $true
     $chkLaunch = New-Object System.Windows.Forms.CheckBox
     $chkLaunch.Text = '安装完成后自动启动 TUI'
-    $chkLaunch.Location = New-Object System.Drawing.Point(14, 120)
+    $chkLaunch.Location = New-Object System.Drawing.Point(14, 90)
     $chkLaunch.AutoSize = $true
     $chkLaunch.Checked = $true
     if ($OnlyConfig) { $grpOpt.Visible = $false }
 
     $lblLogTitle = New-Object System.Windows.Forms.Label
     $lblLogTitle.Text = '安装日志'
-    $lblLogTitle.Location = New-Object System.Drawing.Point(16, 461)
+    $lblLogTitle.Location = New-Object System.Drawing.Point(16, 374)
     $lblLogTitle.AutoSize = $true
     $txtLog = New-Object System.Windows.Forms.RichTextBox
-    $txtLog.Location = New-Object System.Drawing.Point(16, 485)
-    $txtLog.Size = New-Object System.Drawing.Size(552, 175)
+    $txtLog.Location = New-Object System.Drawing.Point(16, 396)
+    $txtLog.Size = New-Object System.Drawing.Size(552, 104)
     $txtLog.ReadOnly = $true
     $txtLog.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
     $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(200, 230, 200)
@@ -996,31 +980,38 @@ namespace DshOneClick {
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(16, 670)
-    $progress.Size = New-Object System.Drawing.Size(552, 14)
+    $progress.Location = New-Object System.Drawing.Point(16, 510)
+    $progress.Size = New-Object System.Drawing.Size(552, 12)
     $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
     $progress.Visible = $false
 
     $btnInstall = New-Object System.Windows.Forms.Button
     $btnInstall.Text = if ($OnlyConfig) { '保存配置' } else { '一键安装' }
-    $btnInstall.Location = New-Object System.Drawing.Point(180, 696)
-    $btnInstall.Size = New-Object System.Drawing.Size(110, 32)
+    $btnInstall.Location = New-Object System.Drawing.Point(180, 530)
+    $btnInstall.Size = New-Object System.Drawing.Size(110, 30)
     $btnInstall.BackColor = [System.Drawing.Color]::FromArgb(77, 171, 247)
     $btnInstall.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 
     $btnTest = New-Object System.Windows.Forms.Button
     $btnTest.Text = '仅测试连接'
-    $btnTest.Location = New-Object System.Drawing.Point(300, 696)
-    $btnTest.Size = New-Object System.Drawing.Size(110, 32)
+    $btnTest.Location = New-Object System.Drawing.Point(300, 530)
+    $btnTest.Size = New-Object System.Drawing.Size(110, 30)
 
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = '取消'
-    $btnCancel.Location = New-Object System.Drawing.Point(420, 696)
-    $btnCancel.Size = New-Object System.Drawing.Size(90, 32)
+    $btnCancel.Location = New-Object System.Drawing.Point(420, 530)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
 
     $form.Controls.AddRange(@($lblTitle, $lblHint, $grpConn, $grpOpt, $lblLogTitle, $txtLog, $progress, $btnInstall, $btnTest, $btnCancel))
-    $grpConn.Controls.AddRange(@($lblKey, $txtKey, $lblKeyNote, $lblBase, $txtBase, $lblBaseNote, $lblEffort, $cmbEffort, $lblModel, $cmbModel))
-    $grpOpt.Controls.AddRange(@($lblTuiVer, $cmbTuiVer, $lblTuiVerNote, $chkSmooth, $chkShortcut, $chkLaunch))
+    $grpConn.Controls.AddRange(@($lblKey, $txtKey, $lblBase, $txtBase, $lblEffort, $cmbEffort, $lblModel, $cmbModel))
+    $grpOpt.Controls.AddRange(@($lblTuiVer, $cmbTuiVer, $chkSmooth, $chkShortcut, $chkLaunch))
+
+    # 悬停提示：替代被压缩掉的灰色说明行，不占窗口空间
+    $tip = New-Object System.Windows.Forms.ToolTip
+    $tip.SetToolTip($txtKey, '在 platform.deepseek.com → API Keys 创建（sk- 开头）')
+    $tip.SetToolTip($txtBase, '默认官方接口；使用 OpenAI 兼容网关/中转时改为自己的地址（如 https://api.deepseek.com/v1）')
+    $tip.SetToolTip($cmbTuiVer, '稳定版 0.9.3 低风险；latest 为上游 beta（0.10.0-beta.1），含 /vim、/resume 大改等新特性')
+    $tip.SetToolTip($cmbModel, '默认 deepseek-v4-flash；可直接输入任意模型名')
 
     $script:LogSink = { param($line)
         $txtLog.AppendText($line + "`r`n")
