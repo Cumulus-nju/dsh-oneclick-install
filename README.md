@@ -35,7 +35,7 @@
 
 你反馈的卡顿主要来自**版本太旧**（旧版 `dsh-cc-tui` 0.3.3 已停止维护）与**状态行高频重绘**。本安装器做了三层处理：
 
-1. **升级到最新版**：安装 `@deepseek-harness-tui/dsh-tui`（默认稳定版 0.9.3；`-TuiVersion latest` 可装尝鲜 beta 0.10.0-beta.1，含 `/vim` 编辑、`/resume` 大改、插件生态等新特性），上游主打「低资源占用、长会话稳定可靠」，并修复了大量渲染与响应性问题（如 ESC 打断卡死等），体验与旧版是两代差距。
+1. **升级到最新版**：安装 `@deepseek-harness-tui/dsh-tui`（默认稳定版 0.9.3；`-TuiVersion latest` 可装尝鲜 beta 预览，含 `/vim` 编辑、`/resume` 大改、插件生态等新特性），上游主打「低资源占用、长会话稳定可靠」，并修复了大量渲染与响应性问题（如 ESC 打断卡死等），体验与旧版是两代差距。
 2. **流畅模式（默认开启）**：向 TUI profile 写入性能优化覆盖层：
    - `working-activity.publishIntervalMs`: `500 → 1500`（工作状态行刷新率从 2Hz 降到 ~0.7Hz，这是重绘开销大头）
    - `dsh-tui.activityFrames`: `claude → dots`（轻量动画帧）
@@ -56,8 +56,8 @@
    - **DeepSeek API Key**（必填）：在 [platform.deepseek.com](https://platform.deepseek.com) → API Keys 创建，`sk-` 开头
    - **接口地址 Base URL**（可选）：默认官方 `https://api.deepseek.com`；使用 OpenAI 兼容网关/中转时改成自己的地址（如 `https://api.deepseek.com/v1`）
    - **推理强度 Reasoning Effort**（可选）：`off / low / high / max`，默认不改动
-   - **默认模型 Model**（可选）：默认 `deepseek-v4-flash`，可下拉选 `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp`，也可直接输入任意模型名（需在该接口返回的模型列表中，否则 TUI 会忽略并回落默认模型；是否勾选「流畅模式」不影响模型生效）
-   - **TUI 版本**（默认稳定版 0.9.3）：可切「尝鲜版 latest」（当前上游 beta 0.10.0-beta.1，含新特性）
+   - **默认模型 Model**（可选）：默认 `deepseek-v4-flash`，可下拉选 `deepseek-v4-pro` / `deepseek-v4-flash-vision-exp`，也可直接输入任意模型名（需在该接口返回的模型列表中，否则 TUI 会忽略并回落默认模型；点击「仅测试连接」或安装时校验通过后，下拉会按你接口实际返回的模型列表自动刷新；是否勾选「流畅模式」不影响模型生效）
+   - **TUI 版本**（默认稳定版 0.9.3）：可切「尝鲜版 latest」（当前上游 beta 预览，含新特性；具体以 npm `latest` 标签为准）
    - **流畅模式**（默认勾选）：降低状态行刷新率、轻量动画帧
    - 勾选是否创建桌面快捷方式、是否安装后自动启动
 4. 点 **一键安装**，等日志走完即完成 ✅
@@ -106,7 +106,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1 -RemoveAll -PurgeHome # �
 - **启动后立刻退回 shell？** 大概率是 pnpm 版本过低（需 ≥10）：`npm install -g pnpm@latest` 后重跑安装器。
 - **提示 `dsh-tui requires an interactive terminal`？** TUI 必须在真实终端里运行，不要把输出重定向/管道。
 - **想升级 TUI？** 重跑 `install.bat`（默认装稳定版 0.9.3，不会擅自升到 beta；想尝鲜在窗口选「尝鲜版 latest」或加 `-TuiVersion latest`），或 TUI 内执行 `/update`；全局命令用 `npm install -g @deepseek-harness-tui/dsh-tui@latest`。
-- **为什么装的是 0.9.3 而不是最新？** `@deepseek-harness-tui/dsh-tui` 的 npm `latest` 标签当前指向 beta（0.10.0-beta.1）。本安装器默认钉扎稳定版 0.9.3，避免静默装 beta；要尝鲜用「尝鲜版 latest」选项。
+- **为什么装的是 0.9.3 而不是最新？** `@deepseek-harness-tui/dsh-tui` 的 npm `latest` 标签当前指向 beta 预览版。本安装器默认钉扎稳定版 0.9.3，避免静默装 beta；要尝鲜用「尝鲜版 latest」选项。
 - **想用 Web UI？** `dsh web` 即可（官方自带），本安装器只做 TUI 目标。
 - **换电脑/重装？** 凭证只存在本机 `~/.dsh/.credentials.yaml`，备份该文件即可迁移。
 

@@ -4,6 +4,8 @@ rem --- One-click launcher for the DeepSeek Harness TUI (dsh-tui) ---
 rem Usage: dsh-tui.bat [--resume]   (--resume resumes the last session)
 if exist "%APPDATA%\npm\dsh-tui.cmd" (
   set "TUI_CMD=%APPDATA%\npm\dsh-tui.cmd"
+) else if exist "%LOCALAPPDATA%\Programs\node\dsh-tui.cmd" (
+  set "TUI_CMD=%LOCALAPPDATA%\Programs\node\dsh-tui.cmd"
 ) else (
   set "TUI_CMD=dsh-tui"
 )

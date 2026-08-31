@@ -97,25 +97,37 @@ function Set-Progress {
 }
 
 $script:InstallWorkerSb = {
-    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State, $TuiVer, $Progress)
+    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig,
+          $QueueRef, $StateRef, $TuiVer, $ProgressRef)
     try {
         # 点源自身脚本（-LibraryMode 只加载函数），复用全部安装逻辑
         . $ScriptPath -LibraryMode
-        $script:LogSink = { param($line) [void]$LogQueue.Enqueue($line) }
-        # 指向共享进度对象，让安装流程里的 Set-Progress 实时写到 UI
-        $script:InstallProgress = $Progress
+        # 注意：install.ps1 顶层会初始化 $script:LogQueue / $script:InstallState /
+        # $script:InstallProgress / $script:LogSink 等脚本作用域变量。点源后这些变量会被
+        # 新建对象替换，因此本脚本块只使用带 Ref 后缀的参数名（不受点源影响），并在
+        # 点源后把共享的队列 / 状态 / 进度对象写回脚本作用域变量，保证 GUI 能实时
+        # 收到日志与安装进度（否则日志队列断链，安装期间界面看不到任何输出）。
+        $script:LogQueue = $QueueRef
+        $script:LogSink = { param($line) [void]$QueueRef.Enqueue($line) }
+        $script:InstallState = $StateRef
+        $script:InstallProgress = $ProgressRef
         $r = Invoke-InstallFlow -Key $Key -Base $Base -Effort $Effort -Model $Model `
             -MakeShortcut $MakeShortcut -Launch $Launch -Smooth $Smooth -OnlyConfig $OnlyConfig -TuiVersion $TuiVer
-        $State.Ok = $r.Ok
-        $State.Summary = $r.Summary
-        $State.CredsPath = $r.CredsPath
-        $State.DshHome = $r.DshHome
-        if (-not $r.Ok) { $State.Error = $r.Error }
+        $StateRef.Ok = $r.Ok
+        if ($r.Ok) {
+            $StateRef.Summary = $r.Summary
+            $StateRef.CredsPath = $r.CredsPath
+            $StateRef.DshHome = $r.DshHome
+        } else {
+            # 失败结果没有 Summary/CredsPath/DshHome 键：只在 Ok 时读取，
+            # 否则会把真实错误信息覆盖成晦涩的属性访问异常
+            $StateRef.Error = if ($r.Error -and $r.Error -ne '') { $r.Error } else { '安装失败，详见上方日志' }
+        }
     } catch {
-        $State.Ok = $false
-        $State.Error = $_.Exception.Message
+        $StateRef.Ok = $false
+        $StateRef.Error = $_.Exception.Message
     } finally {
-        $State.Done = $true
+        $StateRef.Done = $true
     }
 }
 
@@ -133,7 +145,7 @@ function Start-InstallWorker {
     $script:InstallState.Ok = $false
     $script:InstallState.Error = ''
     $script:InstallFinalized = $false
-    $script:InstallProgress = [pscustomobject]@{ Step = ''; Percent = 0 }
+    $script:InstallProgress = [pscustomobject]@{ Step = ''; Percent = 0; Models = $null }
     $dummy = $null
     while ($script:LogQueue.TryDequeue([ref]$dummy)) { }
     $rs = [runspacefactory]::CreateRunspace()
@@ -679,8 +691,14 @@ function Test-ApiKey {
     $headers = @{ Authorization = "Bearer $Key" }
     try {
         $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 25 -ErrorAction Stop
-        $count = @($resp.data).Count
-        return @{ Ok = $true; Message = "连接成功！API Key 有效，可用模型 $count 个" }
+        $models = @($resp.data | ForEach-Object { if ($_.id) { $_.id } elseif ($_.name) { $_.name } } | Where-Object { $_ -and $_ -ne '' })
+        $count = $models.Count
+        $msg = if ($count -gt 0) {
+            "连接成功！API Key 有效，可用模型 $count 个"
+        } else {
+            '连接成功！API Key 有效（该接口未在 /models 响应中列出模型）'
+        }
+        return @{ Ok = $true; Message = $msg; Models = $models }
     } catch {
         $status = ''
         $body = ''
@@ -826,6 +844,11 @@ function Invoke-InstallFlow {
         $test = Test-ApiKey -Key $Key.Trim() -Base $Base
         Write-Log $test.Message
         if (-not $test.Ok) { return @{ Ok = $false; Error = $test.Message } }
+        # 把接口返回的真实模型列表补充到 GUI 的"默认模型"下拉（GUI 模式；Headless 时 $script:InstallProgress 为 $null）
+        $prog = $script:InstallProgress
+        if ($prog -and $test.Models -and @($test.Models).Count -gt 0 -and -not $prog.Models) {
+            $prog.Models = @($test.Models)
+        }
         $summary += 'API Key 校验通过'
     }
 
@@ -1006,7 +1029,7 @@ namespace DshOneClick {
     $cmbTuiVer.Location = New-Object System.Drawing.Point(110, 20)
     $cmbTuiVer.Size = New-Object System.Drawing.Size(260, 23)
     [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("稳定版 0.9.3（推荐）", "0.9.3")))
-    [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("尝鲜版 latest（0.10.0-beta.1）", "latest")))
+    [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("尝鲜版 latest（beta 预览）", "latest")))
     $cmbTuiVer.SelectedIndex = if ($TuiVersion -eq 'latest') { 1 } else { 0 }
     $chkSmooth = New-Object System.Windows.Forms.CheckBox
     $chkSmooth.Text = '流畅模式（降低状态行刷新率，减少卡顿）'
@@ -1078,8 +1101,38 @@ namespace DshOneClick {
     $tip = New-Object System.Windows.Forms.ToolTip
     $tip.SetToolTip($txtKey, '在 platform.deepseek.com → API Keys 创建（sk- 开头）')
     $tip.SetToolTip($txtBase, '默认官方接口；使用 OpenAI 兼容网关/中转时改为自己的地址（如 https://api.deepseek.com/v1）')
-    $tip.SetToolTip($cmbTuiVer, '稳定版 0.9.3 低风险；latest 为上游 beta（0.10.0-beta.1），含 /vim、/resume 大改等新特性')
+    $tip.SetToolTip($cmbTuiVer, '稳定版 0.9.3 低风险；latest 为上游 beta 预览（版本以 npm latest 标签为准），含 /vim、/resume 大改等新特性')
     $tip.SetToolTip($cmbModel, '默认 deepseek-v4-flash；可直接输入任意模型名（需在该接口的模型列表中，否则 TUI 会回落默认模型）')
+
+    # ---- 预载现有配置：configure.bat 重开时不显示成默认值，避免保存时把已有的
+    #      默认模型 / 推理强度 / 接口地址悄悄改回默认 ----
+    $preLoadHome = Get-DshHome
+    $prePatch = Join-Path $preLoadHome "profiles\$PROFILE_NAME\cordis.patch.yml"
+    if (Test-Path $prePatch) {
+        $preTxt = Get-Content $prePatch -Raw
+        if ($preTxt -match '(?m)^\s*model:\s*([^\s#]+)') { $cmbModel.Text = $Matches[1].Trim("'", '"') }
+        if ($preTxt -match '(?m)^\s*effort:\s*([^\s#]+)') {
+            $preEffIdx = $cmbEffort.Items.IndexOf($Matches[1].Trim("'", '"'))
+            if ($preEffIdx -gt 0) { $cmbEffort.SelectedIndex = $preEffIdx }
+        }
+    }
+    $preSettings = Join-Path $preLoadHome 'settings.yaml'
+    if (Test-Path $preSettings) {
+        $preSTxt = Get-Content $preSettings -Raw
+        if ($preSTxt -match '(?m)^\s*baseURL:\s*([^\s#]+)') { $txtBase.Text = $Matches[1].Trim("'", '"') }
+    }
+
+    # 用接口返回的真实模型列表补充"默认模型"下拉（保留用户手输值）
+    function Update-ModelList {
+        param([object[]]$Models)
+        if (-not $Models -or $Models.Count -eq 0) { return }
+        $keep = $cmbModel.Text
+        $cmbModel.Items.Clear()
+        foreach ($mm in $Models) { [void]$cmbModel.Items.Add($mm) }
+        if ($keep -eq '') { $cmbModel.Text = $Models[0] }
+        elseif ($keep -eq 'deepseek-v4-flash' -and -not ($Models -contains $keep)) { $cmbModel.Text = $Models[0] }
+        else { $cmbModel.Text = $keep }
+    }
 
     $script:LogSink = { param($line)
         $txtLog.AppendText($line + "`r`n")
@@ -1114,6 +1167,12 @@ namespace DshOneClick {
             $lblStatus.Text = $script:InstallProgress.Step
             $v = $script:InstallProgress.Percent
             if ($v -gt $progress.Value) { $progress.Value = $v }
+            # 校验通过后把接口返回的真实模型列表补充到"默认模型"下拉（只填一次）
+            if ($script:InstallProgress.Models -and @($script:InstallProgress.Models).Count -gt 0) {
+                Update-ModelList @($script:InstallProgress.Models)
+                $txtLog.AppendText('已按接口返回更新模型下拉' + "`r`n")
+                $script:InstallProgress.Models = $null
+            }
         }
 
         if ($script:InstallState.Done -and -not $script:InstallFinalized) {
@@ -1188,6 +1247,12 @@ namespace DshOneClick {
         $r = Test-ApiKey -Key $txtKey.Text.Trim() -Base $txtBase.Text
         $txtLog.AppendText($r.Message + "`r`n")
         $lblStatus.Text = if ($r.Ok) { '连接成功' } else { '连接失败' }
+        if ($r.Ok -and $r.Models -and @($r.Models).Count -gt 0) {
+            Update-ModelList @($r.Models)
+            $shownModels = @($r.Models | Select-Object -First 8) -join ', '
+            if (@($r.Models).Count -gt 8) { $shownModels += '…' }
+            $txtLog.AppendText(('已按接口返回更新模型下拉：' + $shownModels) + "`r`n")
+        }
         Set-Busy $false
         [System.Windows.Forms.MessageBox]::Show($form, $r.Message, '连接测试', 'OK', $(if ($r.Ok) { 'Information' } else { 'Error' })) | Out-Null
     })

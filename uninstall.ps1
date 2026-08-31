@@ -37,17 +37,31 @@ if (Test-Path $launcherDir) {
     if (-not (Test-Path $launcherDir)) { Write-Host "已清理启动器目录: $launcherDir" }
 }
 
-# 3) npm 卸载
+# 3) npm 卸载（npm 可能未安装/不在 PATH，检测后再执行，避免静默假成功）
+$npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmCmd) { $npmCmd = Get-Command npm -ErrorAction SilentlyContinue }
+$npmPath = if ($npmCmd) { $npmCmd.Source } else { '' }
+$npmMissing = $npmPath -eq ''
+$npmHint = 'npm 全局卸载命令：npm uninstall -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui（Node.js 已安装时可在任意终端执行）'
+
 if ($RemoveAll) {
     Write-Host '正在 npm 全局卸载 @deepseek-ai/dsh 与 @deepseek-harness-tui/dsh-tui ...'
-    npm uninstall -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui 2>$null
-    Write-Host '已卸载全局包'
+    if ($npmMissing) {
+        Write-Host "未找到 npm（Node.js 未安装或不在 PATH）。$npmHint"
+    } else {
+        & $npmPath uninstall -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui 2>$null
+        Write-Host '已卸载全局包'
+    }
 } else {
     Write-Host ''
     $ans = Read-Host '是否同时卸载 @deepseek-ai/dsh 与 @deepseek-harness-tui/dsh-tui 全局包？(y/N)'
     if ($ans -match '^[yY]') {
-        npm uninstall -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui 2>$null
-        Write-Host '已卸载全局包'
+        if ($npmMissing) {
+            Write-Host "未找到 npm（Node.js 未安装或不在 PATH）。$npmHint"
+        } else {
+            & $npmPath uninstall -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui 2>$null
+            Write-Host '已卸载全局包'
+        }
     }
 }
 
