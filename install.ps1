@@ -5,7 +5,8 @@
  对应 DeepSeek Harness 官方连接 DeepSeek API 的现有方式（TUI 版）：
    1. 检查 Node.js（要求 ^22.19 || >=24；缺失/过旧则自动安装最新 LTS 便携版）
    2. npm 全局安装 @deepseek-ai/dsh（官方 Harness CLI）与
-      @deepseek-harness-tui/dsh-tui（官方公众号收录的 TUI 前端，v0.9+ 低资源占用）
+      @deepseek-harness-tui/dsh-tui（官方公众号收录的 TUI 前端；版本默认稳定版 0.9.3，
+      可传 -TuiVersion latest 装尝鲜 beta，见参数说明）
    3. 检查 pnpm（>=10，dsh plugin 安装 profile 依赖需要）
    4. dsh plugin --profile dsh-tui add @deepseek-harness-tui/dsh-tui@latest
       （创建 dsh-tui profile；dsh-tui 命令 = dsh --profile dsh-tui）
@@ -20,6 +21,7 @@
  用法：
    install.bat                     双击（图形窗口，填写 API Key 后一键安装）
    powershell -File install.ps1 -Headless -ApiKey sk-xxx ...  命令行模式
+   powershell -File install.ps1 -Headless -ApiKey sk-xxx -TuiVersion latest  尝鲜 dsh-tui beta
 ================================================================================
 #>
 [CmdletBinding()]
@@ -30,6 +32,7 @@ param(
     [string]$BaseUrl = "https://api.deepseek.com",
     [string]$ReasoningEffort = "",   # off|low|high|max；留空则不改动默认值
     [string]$Model = "",         # 默认模型：留空=deepseek-v4-flash；可填任意模型名
+    [string]$TuiVersion = '0.9.3',  # dsh-tui 版本：'0.9.3'（稳定版，默认）或 'latest'（尝鲜 beta）。上游发新稳定版后此默认值同步更新
     [switch]$NoShortcut,        # 不创建桌面快捷方式
     [switch]$NoLaunch,          # 安装完成后不自动启动 TUI
     [switch]$SkipNodeCheck,     # 跳过 Node.js 检测/安装
@@ -50,6 +53,8 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::S
 $PROFILE_NAME = 'dsh-tui'
 $TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
 $DEFAULT_BASE_URL = 'https://api.deepseek.com'
+# dsh-tui 默认（稳定）版本。上游 stable 线推进时更新这里 + param 默认值 + GUI 下拉文案 + README。
+$DEFAULT_TUI_VERSION = '0.9.3'
 
 #region 基础工具
 function Get-DshHome {
@@ -80,13 +85,13 @@ $script:InstallPs = $null
 $script:InstallAsync = $null
 
 $script:InstallWorkerSb = {
-    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State)
+    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State, $TuiVer)
     try {
         # 点源自身脚本（-LibraryMode 只加载函数），复用全部安装逻辑
         . $ScriptPath -LibraryMode
         $script:LogSink = { param($line) [void]$LogQueue.Enqueue($line) }
         $r = Invoke-InstallFlow -Key $Key -Base $Base -Effort $Effort -Model $Model `
-            -MakeShortcut $MakeShortcut -Launch $Launch -Smooth $Smooth -OnlyConfig $OnlyConfig
+            -MakeShortcut $MakeShortcut -Launch $Launch -Smooth $Smooth -OnlyConfig $OnlyConfig -TuiVersion $TuiVer
         $State.Ok = $r.Ok
         $State.Summary = $r.Summary
         $State.CredsPath = $r.CredsPath
@@ -102,7 +107,7 @@ $script:InstallWorkerSb = {
 
 function Start-InstallWorker {
     param([string]$Key, [string]$Base, [string]$Effort, [string]$Model,
-          [bool]$MakeShortcut, [bool]$Launch, [bool]$Smooth, [bool]$OnlyConfig)
+          [bool]$MakeShortcut, [bool]$Launch, [bool]$Smooth, [bool]$OnlyConfig, [string]$TuiVer)
     try {
         if ($script:InstallPs) {
             try { $null = $script:InstallPs.EndInvoke($script:InstallAsync) } catch { }
@@ -122,7 +127,7 @@ function Start-InstallWorker {
     $rs.Open()
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
-    $null = $ps.AddScript($script:InstallWorkerSb.ToString()).AddArgument($PSCommandPath).AddArgument($Key).AddArgument($Base).AddArgument($Effort).AddArgument($Model).AddArgument($MakeShortcut).AddArgument($Launch).AddArgument($Smooth).AddArgument($OnlyConfig).AddArgument($script:LogQueue).AddArgument($script:InstallState)
+    $null = $ps.AddScript($script:InstallWorkerSb.ToString()).AddArgument($PSCommandPath).AddArgument($Key).AddArgument($Base).AddArgument($Effort).AddArgument($Model).AddArgument($MakeShortcut).AddArgument($Launch).AddArgument($Smooth).AddArgument($OnlyConfig).AddArgument($script:LogQueue).AddArgument($script:InstallState).AddArgument($TuiVer)
     $script:InstallPs = $ps
     $script:InstallAsync = $ps.BeginInvoke()
 }
@@ -324,17 +329,18 @@ function Update-NpmTo12 {
 }
 
 function Install-HarnessPackages {
+    param([string]$TuiVersion)
     $npmCmd = (Resolve-NodeInfo).NpmCmd
     if (-not $npmCmd) {
         $npmCmd = Resolve-CmdShim 'npm'
     }
     if (-not $npmCmd) { return 'fail' }
-    Write-Log '正在 npm 全局安装 @deepseek-ai/dsh 与 @deepseek-harness-tui/dsh-tui（首次约需下载 300MB，请耐心等待）…'
+    Write-Log "正在 npm 全局安装 @deepseek-ai/dsh@latest 与 $TUI_PACKAGE@$TuiVersion（首次约需下载 300MB，请耐心等待）…"
     $env:NPM_CONFIG_FUND = 'false'
     # 失败恢复顺序：protobufjs bug（npm 11）→ 升级 npm 12 → 镜像重试 → 降级仅装 TUI。
     # 官方源与 npmmirror 各试一次，protobufjs 特征在任何源下都先走 npm 12。
     $npmOut = @()
-    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
     if ($LASTEXITCODE -ne 0) {
         if (Test-NpmProtobufjsFailure $npmOut) {
             Write-Log '组合安装失败：npm 11 的 protobufjs postinstall 已知问题（MODULE_NOT_FOUND）'
@@ -343,7 +349,7 @@ function Install-HarnessPackages {
                 $npmCmd = $newNpm
                 Write-Log '使用 npm 12 重新尝试组合安装…'
                 $npmOut = @()
-                Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
                 if ($LASTEXITCODE -eq 0) {
                     Add-ToUserPath (Join-Path $env:APPDATA 'npm')
                     return 'ok'
@@ -353,7 +359,7 @@ function Install-HarnessPackages {
             # 网络原因（国内常见）→ npmmirror 镜像重试一次
             Write-Log 'npm 官方源安装失败，切换 npmmirror 镜像重试…'
             $npmOut = @()
-            Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+            Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
             if ($LASTEXITCODE -eq 0) {
                 Add-ToUserPath (Join-Path $env:APPDATA 'npm')
                 return 'ok'
@@ -365,7 +371,7 @@ function Install-HarnessPackages {
                 if ($newNpm) {
                     $npmCmd = $newNpm
                     $npmOut = @()
-                    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                    Invoke-Native { & $npmCmd install -g @deepseek-ai/dsh@latest $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
                     if ($LASTEXITCODE -eq 0) {
                         Add-ToUserPath (Join-Path $env:APPDATA 'npm')
                         return 'ok'
@@ -378,7 +384,7 @@ function Install-HarnessPackages {
         Write-Log '@deepseek-ai/dsh 安装未完成（常见原因：Harness 正在运行、全局目录被占用；或网络/镜像问题未解决）'
         Write-Log '降级方案：仅安装 TUI 包 @deepseek-harness-tui/dsh-tui…'
         $npmOut = @()
-        Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+        Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
         if ($LASTEXITCODE -ne 0) {
             if (Test-NpmProtobufjsFailure $npmOut) {
                 # 降级也遇到 protobufjs bug → 同样升级 npm 12 重试
@@ -387,7 +393,7 @@ function Install-HarnessPackages {
                 if ($newNpm) {
                     $npmCmd = $newNpm
                     $npmOut = @()
-                    Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                    Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit --allow-scripts=$NPM12_ALLOW_SCRIPTS 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
                     if ($LASTEXITCODE -eq 0) {
                         Add-ToUserPath (Join-Path $env:APPDATA 'npm')
                         Write-Log 'TUI 包安装成功（npm 12）'
@@ -398,7 +404,7 @@ function Install-HarnessPackages {
                 # 网络原因 → 镜像重试 TUI 包
                 Write-Log 'TUI 包安装失败，切换 npmmirror 镜像重试…'
                 $npmOut = @()
-                Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@latest --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
+                Invoke-Native { & $npmCmd install -g $TUI_PACKAGE@$TuiVersion --foreground-scripts --no-fund --no-audit --registry=$NPM_REGISTRY_FALLBACK 2>&1 } | ForEach-Object { $npmOut += $_; Write-Log "npm: $_" }
                 if ($LASTEXITCODE -eq 0) {
                     Add-ToUserPath (Join-Path $env:APPDATA 'npm')
                     Write-Log 'TUI 包安装成功（npmmirror 镜像）'
@@ -470,13 +476,13 @@ function Fix-PnpmAllowBuilds {
 }
 
 function Install-TuiProfile {
-    param([string]$DshHome)
+    param([string]$DshHome, [string]$TuiVersion)
     $dshCmd = Resolve-CmdShim 'dsh'
     if (-not $dshCmd) { Write-Log '未找到 dsh 命令'; return $false }
     Write-Log "正在创建 profile '$PROFILE_NAME' 并安装 $TUI_PACKAGE（首次需联网下载，请耐心等待）…"
     $wsFile = Join-Path $DshHome "profiles\$PROFILE_NAME\pnpm-workspace.yaml"
     for ($attempt = 0; $attempt -lt 2; $attempt++) {
-        Invoke-Native { & $dshCmd plugin --profile $PROFILE_NAME add "$TUI_PACKAGE@latest" 2>&1 } | ForEach-Object { Write-Log "dsh: $_" }
+        Invoke-Native { & $dshCmd plugin --profile $PROFILE_NAME add "$TUI_PACKAGE@$TuiVersion" 2>&1 } | ForEach-Object { Write-Log "dsh: $_" }
         if ($LASTEXITCODE -eq 0) { break }
         Write-Log "dsh plugin 退出码 $LASTEXITCODE"
         if ($attempt -eq 0) {
@@ -494,7 +500,7 @@ function Install-TuiProfile {
         $m = Get-Content $pkgJson -Raw | ConvertFrom-Json
         if ($m.dsh.profile.bundles -contains $TUI_PACKAGE) { return $true }
         Write-Log "profile bundle 层缺少 $TUI_PACKAGE，尝试再次同步…"
-        Invoke-Native { & $dshCmd plugin --profile $PROFILE_NAME add "$TUI_PACKAGE@latest" 2>&1 } | ForEach-Object { Write-Log "dsh: $_" }
+        Invoke-Native { & $dshCmd plugin --profile $PROFILE_NAME add "$TUI_PACKAGE@$TuiVersion" 2>&1 } | ForEach-Object { Write-Log "dsh: $_" }
         $m2 = Get-Content $pkgJson -Raw | ConvertFrom-Json
         if ($m2.dsh.profile.bundles -contains $TUI_PACKAGE) { return $true }
     }
@@ -727,6 +733,7 @@ function Invoke-InstallFlow {
         [string]$Base,
         [string]$Effort,
         [string]$Model,
+        [string]$TuiVersion,
         [bool]$MakeShortcut,
         [bool]$Launch,
         [bool]$Smooth,
@@ -737,6 +744,11 @@ function Invoke-InstallFlow {
     $credsPath = Join-Path $dshHome '.credentials.yaml'
     $settingsPath = Join-Path $dshHome 'settings.yaml'
     $summary = @()
+
+    # 版本格式白名单，防止任意字符串拼进 npm/pnpm 命令（latest 标签也在白名单内）
+    if ($TuiVersion -notmatch '^[A-Za-z0-9][A-Za-z0-9\.\-]*$') {
+        return @{ Ok = $false; Error = "TUI 版本格式非法：'$TuiVersion'（应为如 0.9.3 的版本号，或 latest）" }
+    }
 
     # 1) Node.js
     if (-not $OnlyConfig -and -not $SkipNodeCheck) {
@@ -755,16 +767,16 @@ function Invoke-InstallFlow {
 
     # 2) npm 全局安装 Harness + TUI
     if (-not $OnlyConfig -and -not $SkipNpmInstall) {
-        $npmResult = Install-HarnessPackages
+        $npmResult = Install-HarnessPackages -TuiVersion $TuiVersion
         if ($npmResult -eq 'fail') { return @{ Ok = $false; Error = '@deepseek-ai/dsh / @deepseek-harness-tui/dsh-tui 安装失败，请检查网络后重试' } }
-        if ($npmResult -eq 'ok') { $summary += 'dsh + dsh-tui 已安装' }
-        else { $summary += 'dsh-tui 已安装（@deepseek-ai/dsh 更新被跳过，见日志提示）' }
+        if ($npmResult -eq 'ok') { $summary += "dsh + dsh-tui@$TuiVersion 已安装" }
+        else { $summary += "dsh-tui@$TuiVersion 已安装（@deepseek-ai/dsh 更新被跳过，见日志提示）" }
     }
 
     # 3) pnpm + dsh-tui profile
     if (-not $OnlyConfig -and -not $SkipTuiSetup) {
         if (-not (Ensure-Pnpm)) { return @{ Ok = $false; Error = 'pnpm 安装失败，请手动执行 npm install -g pnpm 后重试' } }
-        if (-not (Install-TuiProfile -DshHome $dshHome)) { return @{ Ok = $false; Error = 'dsh-tui profile 安装失败（详见上方日志）' } }
+        if (-not (Install-TuiProfile -DshHome $dshHome -TuiVersion $TuiVersion)) { return @{ Ok = $false; Error = 'dsh-tui profile 安装失败（详见上方日志）' } }
         $summary += "profile '$PROFILE_NAME' 已就绪"
     }
 
@@ -832,16 +844,30 @@ function Invoke-InstallFlow {
 
 #region 图形窗口（WinForms）
 function Show-ConfigWindow {
-    param([bool]$OnlyConfig)
+    param([bool]$OnlyConfig, [string]$TuiVersion)
 
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+
+    # "TUI 版本"下拉的选项模型（显示名 / 实际值分离），同一进程只定义一次
+    if (-not ('DshOneClick.TuiVersionItem' -as [type])) {
+        Add-Type -TypeDefinition @'
+namespace DshOneClick {
+    public class TuiVersionItem {
+        public string Label;
+        public string Value;
+        public TuiVersionItem(string label, string value) { Label = label; Value = value; }
+        public override string ToString() { return Label; }
+    }
+}
+'@
+    }
 
     $script:workerBusy = $false
 
     $form = New-Object System.Windows.Forms.Form
     $form.Text = if ($OnlyConfig) { 'DeepSeek Harness TUI - 配置 API' } else { 'DeepSeek Harness TUI - 一键安装' }
-    $form.Size = New-Object System.Drawing.Size(600, 730)
+    $form.Size = New-Object System.Drawing.Size(600, 774)
     $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $form.MaximizeBox = $false
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
@@ -857,7 +883,7 @@ function Show-ConfigWindow {
     $lblHint.Text = if ($OnlyConfig) {
         '填写以下信息保存即可，修改立即生效（dsh 每次请求实时解析凭证与设置，无需重启）。'
     } else {
-        '只需填写 DeepSeek API Key。脚本自动安装 Node.js、dsh、dsh-tui（v0.9+ 低资源占用）、' +
+        '只需填写 DeepSeek API Key。脚本自动安装 Node.js、dsh、dsh-tui（下方可选稳定/尝鲜版）、' +
         'pnpm 并创建 TUI profile，校验 Key 后启动终端界面。'
     }
     $lblHint.ForeColor = [System.Drawing.Color]::Gray
@@ -922,30 +948,46 @@ function Show-ConfigWindow {
     $grpOpt = New-Object System.Windows.Forms.GroupBox
     $grpOpt.Text = '安装选项'
     $grpOpt.Location = New-Object System.Drawing.Point(16, 311)
-    $grpOpt.Size = New-Object System.Drawing.Size(552, 102)
+    $grpOpt.Size = New-Object System.Drawing.Size(552, 142)
+    $lblTuiVer = New-Object System.Windows.Forms.Label
+    $lblTuiVer.Text = 'TUI 版本'
+    $lblTuiVer.Location = New-Object System.Drawing.Point(14, 24)
+    $lblTuiVer.AutoSize = $true
+    $cmbTuiVer = New-Object System.Windows.Forms.ComboBox
+    $cmbTuiVer.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $cmbTuiVer.Location = New-Object System.Drawing.Point(110, 20)
+    $cmbTuiVer.Size = New-Object System.Drawing.Size(280, 23)
+    [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("稳定版 0.9.3（推荐）", "0.9.3")))
+    [void]$cmbTuiVer.Items.Add((New-Object DshOneClick.TuiVersionItem -ArgumentList @("尝鲜版 latest（0.10.0-beta.1）", "latest")))
+    $cmbTuiVer.SelectedIndex = if ($TuiVersion -eq 'latest') { 1 } else { 0 }
+    $lblTuiVerNote = New-Object System.Windows.Forms.Label
+    $lblTuiVerNote.Text = '稳定版低风险；latest 为上游 beta，含新特性'
+    $lblTuiVerNote.ForeColor = [System.Drawing.Color]::Gray
+    $lblTuiVerNote.Location = New-Object System.Drawing.Point(110, 44)
+    $lblTuiVerNote.AutoSize = $true
     $chkSmooth = New-Object System.Windows.Forms.CheckBox
     $chkSmooth.Text = '流畅模式（降低状态行刷新率 500ms→1500ms、轻量动画帧，减少卡顿）'
-    $chkSmooth.Location = New-Object System.Drawing.Point(14, 20)
+    $chkSmooth.Location = New-Object System.Drawing.Point(14, 70)
     $chkSmooth.Size = New-Object System.Drawing.Size(520, 20)
     $chkSmooth.Checked = $true
     $chkShortcut = New-Object System.Windows.Forms.CheckBox
     $chkShortcut.Text = '创建桌面快捷方式（一键启动终端 TUI）'
-    $chkShortcut.Location = New-Object System.Drawing.Point(14, 48)
+    $chkShortcut.Location = New-Object System.Drawing.Point(14, 96)
     $chkShortcut.AutoSize = $true
     $chkShortcut.Checked = $true
     $chkLaunch = New-Object System.Windows.Forms.CheckBox
     $chkLaunch.Text = '安装完成后自动启动 TUI'
-    $chkLaunch.Location = New-Object System.Drawing.Point(14, 74)
+    $chkLaunch.Location = New-Object System.Drawing.Point(14, 120)
     $chkLaunch.AutoSize = $true
     $chkLaunch.Checked = $true
     if ($OnlyConfig) { $grpOpt.Visible = $false }
 
     $lblLogTitle = New-Object System.Windows.Forms.Label
     $lblLogTitle.Text = '安装日志'
-    $lblLogTitle.Location = New-Object System.Drawing.Point(16, 421)
+    $lblLogTitle.Location = New-Object System.Drawing.Point(16, 461)
     $lblLogTitle.AutoSize = $true
     $txtLog = New-Object System.Windows.Forms.RichTextBox
-    $txtLog.Location = New-Object System.Drawing.Point(16, 445)
+    $txtLog.Location = New-Object System.Drawing.Point(16, 485)
     $txtLog.Size = New-Object System.Drawing.Size(552, 175)
     $txtLog.ReadOnly = $true
     $txtLog.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -954,31 +996,31 @@ function Show-ConfigWindow {
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(16, 630)
+    $progress.Location = New-Object System.Drawing.Point(16, 670)
     $progress.Size = New-Object System.Drawing.Size(552, 14)
     $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
     $progress.Visible = $false
 
     $btnInstall = New-Object System.Windows.Forms.Button
     $btnInstall.Text = if ($OnlyConfig) { '保存配置' } else { '一键安装' }
-    $btnInstall.Location = New-Object System.Drawing.Point(180, 656)
+    $btnInstall.Location = New-Object System.Drawing.Point(180, 696)
     $btnInstall.Size = New-Object System.Drawing.Size(110, 32)
     $btnInstall.BackColor = [System.Drawing.Color]::FromArgb(77, 171, 247)
     $btnInstall.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 
     $btnTest = New-Object System.Windows.Forms.Button
     $btnTest.Text = '仅测试连接'
-    $btnTest.Location = New-Object System.Drawing.Point(300, 656)
+    $btnTest.Location = New-Object System.Drawing.Point(300, 696)
     $btnTest.Size = New-Object System.Drawing.Size(110, 32)
 
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = '取消'
-    $btnCancel.Location = New-Object System.Drawing.Point(420, 656)
+    $btnCancel.Location = New-Object System.Drawing.Point(420, 696)
     $btnCancel.Size = New-Object System.Drawing.Size(90, 32)
 
     $form.Controls.AddRange(@($lblTitle, $lblHint, $grpConn, $grpOpt, $lblLogTitle, $txtLog, $progress, $btnInstall, $btnTest, $btnCancel))
     $grpConn.Controls.AddRange(@($lblKey, $txtKey, $lblKeyNote, $lblBase, $txtBase, $lblBaseNote, $lblEffort, $cmbEffort, $lblModel, $cmbModel))
-    $grpOpt.Controls.AddRange(@($chkSmooth, $chkShortcut, $chkLaunch))
+    $grpOpt.Controls.AddRange(@($lblTuiVer, $cmbTuiVer, $lblTuiVerNote, $chkSmooth, $chkShortcut, $chkLaunch))
 
     $script:LogSink = { param($line)
         $txtLog.AppendText($line + "`r`n")
@@ -1059,6 +1101,7 @@ function Show-ConfigWindow {
         Start-InstallWorker -Key $txtKey.Text -Base $txtBase.Text `
             -Effort $(if ($cmbEffort.SelectedIndex -gt 0) { $cmbEffort.SelectedItem } else { '' }) `
             -Model $cmbModel.Text `
+            -TuiVer $(if ($cmbTuiVer.SelectedItem) { $cmbTuiVer.SelectedItem.Value } else { $DEFAULT_TUI_VERSION }) `
             -MakeShortcut $chkShortcut.Checked -Launch $chkLaunch.Checked -Smooth $chkSmooth.Checked -OnlyConfig $OnlyConfig
     })
 
@@ -1100,7 +1143,7 @@ if (-not $LibraryMode) {
             Write-Host 'Headless 模式必须提供 -ApiKey 参数（或用环境变量 DSH_INSTALL_API_KEY）'
             exit 2
         }
-        $result = Invoke-InstallFlow -Key $ApiKey -Base $BaseUrl -Effort $ReasoningEffort -Model $Model `
+        $result = Invoke-InstallFlow -Key $ApiKey -Base $BaseUrl -Effort $ReasoningEffort -Model $Model -TuiVersion $TuiVersion `
             -MakeShortcut (-not $NoShortcut) -Launch (-not $NoLaunch) -Smooth $SmoothMode -OnlyConfig $ConfigureOnly
         if (-not $result.Ok) {
             Write-Host "失败：$($result.Error)"
@@ -1115,6 +1158,6 @@ if (-not $LibraryMode) {
         exit 0
     }
 
-    Show-ConfigWindow -OnlyConfig $ConfigureOnly
+    Show-ConfigWindow -OnlyConfig $ConfigureOnly -TuiVersion $TuiVersion
 }
 #endregion
