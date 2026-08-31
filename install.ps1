@@ -84,12 +84,25 @@ $script:InstallFinalized = $false
 $script:InstallPs = $null
 $script:InstallAsync = $null
 
+# 安装进度（GUI 模式：安装流程写 Step/Percent，UI 定时器读；Headless 无 UI 时保持 $null，Set-Progress 空操作）
+$script:InstallProgress = $null
+
+function Set-Progress {
+    param([string]$Step = '', [int]$Percent = -1)
+    $p = $script:InstallProgress
+    if ($null -eq $p) { return }
+    if ($Step -ne '') { $p.Step = $Step }
+    if ($Percent -ge 0) { $p.Percent = [Math]::Min(100, [Math]::Max(0, $Percent)) }
+}
+
 $script:InstallWorkerSb = {
-    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State, $TuiVer)
+    param($ScriptPath, $Key, $Base, $Effort, $Model, $MakeShortcut, $Launch, $Smooth, $OnlyConfig, $LogQueue, $State, $TuiVer, $Progress)
     try {
         # 点源自身脚本（-LibraryMode 只加载函数），复用全部安装逻辑
         . $ScriptPath -LibraryMode
         $script:LogSink = { param($line) [void]$LogQueue.Enqueue($line) }
+        # 指向共享进度对象，让安装流程里的 Set-Progress 实时写到 UI
+        $script:InstallProgress = $Progress
         $r = Invoke-InstallFlow -Key $Key -Base $Base -Effort $Effort -Model $Model `
             -MakeShortcut $MakeShortcut -Launch $Launch -Smooth $Smooth -OnlyConfig $OnlyConfig -TuiVersion $TuiVer
         $State.Ok = $r.Ok
@@ -119,6 +132,7 @@ function Start-InstallWorker {
     $script:InstallState.Ok = $false
     $script:InstallState.Error = ''
     $script:InstallFinalized = $false
+    $script:InstallProgress = [pscustomobject]@{ Step = ''; Percent = 0 }
     $dummy = $null
     while ($script:LogQueue.TryDequeue([ref]$dummy)) { }
     $rs = [runspacefactory]::CreateRunspace()
@@ -127,7 +141,7 @@ function Start-InstallWorker {
     $rs.Open()
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
-    $null = $ps.AddScript($script:InstallWorkerSb.ToString()).AddArgument($PSCommandPath).AddArgument($Key).AddArgument($Base).AddArgument($Effort).AddArgument($Model).AddArgument($MakeShortcut).AddArgument($Launch).AddArgument($Smooth).AddArgument($OnlyConfig).AddArgument($script:LogQueue).AddArgument($script:InstallState).AddArgument($TuiVer)
+    $null = $ps.AddScript($script:InstallWorkerSb.ToString()).AddArgument($PSCommandPath).AddArgument($Key).AddArgument($Base).AddArgument($Effort).AddArgument($Model).AddArgument($MakeShortcut).AddArgument($Launch).AddArgument($Smooth).AddArgument($OnlyConfig).AddArgument($script:LogQueue).AddArgument($script:InstallState).AddArgument($TuiVer).AddArgument($script:InstallProgress)
     $script:InstallPs = $ps
     $script:InstallAsync = $ps.BeginInvoke()
 }
@@ -750,8 +764,11 @@ function Invoke-InstallFlow {
         return @{ Ok = $false; Error = "TUI 版本格式非法：'$TuiVersion'（应为如 0.9.3 的版本号，或 latest）" }
     }
 
+    Set-Progress '准备安装…' 5
+
     # 1) Node.js
     if (-not $OnlyConfig -and -not $SkipNodeCheck) {
+        Set-Progress '检查 Node.js 环境…' 10
         $node = Resolve-NodeInfo
         if (-not $node.Found -or -not (Test-NodeSatisfies $node)) {
             if ($node.Found) {
@@ -764,17 +781,21 @@ function Invoke-InstallFlow {
         Write-Log "Node.js v$($node.NodeMajor).$($node.NodeMinor) 已就绪"
         $summary += "Node.js v$($node.NodeMajor).$($node.NodeMinor)"
     }
+    Set-Progress 'Node.js 环境就绪' 12
 
     # 2) npm 全局安装 Harness + TUI
     if (-not $OnlyConfig -and -not $SkipNpmInstall) {
+        Set-Progress '安装 dsh 与 dsh-tui（首次需下载数百 MB，请耐心等待）' 20
         $npmResult = Install-HarnessPackages -TuiVersion $TuiVersion
         if ($npmResult -eq 'fail') { return @{ Ok = $false; Error = '@deepseek-ai/dsh / @deepseek-harness-tui/dsh-tui 安装失败，请检查网络后重试' } }
         if ($npmResult -eq 'ok') { $summary += "dsh + dsh-tui@$TuiVersion 已安装" }
         else { $summary += "dsh-tui@$TuiVersion 已安装（@deepseek-ai/dsh 更新被跳过，见日志提示）" }
     }
+    Set-Progress 'Harness 与 TUI 安装完成' 45
 
     # 3) pnpm + dsh-tui profile
     if (-not $OnlyConfig -and -not $SkipTuiSetup) {
+        Set-Progress '创建 TUI profile（dsh-tui）' 50
         if (-not (Ensure-Pnpm)) { return @{ Ok = $false; Error = 'pnpm 安装失败，请手动执行 npm install -g pnpm 后重试' } }
         if (-not (Install-TuiProfile -DshHome $dshHome -TuiVersion $TuiVersion)) { return @{ Ok = $false; Error = 'dsh-tui profile 安装失败（详见上方日志）' } }
         $summary += "profile '$PROFILE_NAME' 已就绪"
@@ -782,6 +803,7 @@ function Invoke-InstallFlow {
 
     # 4) 校验 API Key
     if (-not $NoValidate) {
+        Set-Progress '校验 API Key' 72
         if ([string]::IsNullOrWhiteSpace($Key)) { return @{ Ok = $false; Error = '请填写 DeepSeek API Key（在 platform.deepseek.com 的 API Keys 页面创建）' } }
         Write-Log "正在校验 API Key（$Base）…"
         $test = Test-ApiKey -Key $Key.Trim() -Base $Base
@@ -789,6 +811,8 @@ function Invoke-InstallFlow {
         if (-not $test.Ok) { return @{ Ok = $false; Error = $test.Message } }
         $summary += 'API Key 校验通过'
     }
+
+    Set-Progress '写入凭证与设置' 82
 
     # 5) 写入凭证
     if ($Key.Trim() -ne '') {
@@ -813,12 +837,16 @@ function Invoke-InstallFlow {
         Write-Log "已写入设置：$settingsPath"
     }
 
+    Set-Progress '应用流畅模式' 88
+
     # 7) 流畅模式覆盖层
     if ($Smooth -and -not $OnlyConfig) {
         if (Write-PerfOverlay -DshHome $dshHome -Effort $Effort -Model $Model) {
             $summary += '流畅模式已启用'
         }
     }
+
+    Set-Progress '创建启动器与快捷方式' 92
 
     # 8) 启动器 + 快捷方式
     if (-not $OnlyConfig) {
@@ -834,9 +862,11 @@ function Invoke-InstallFlow {
 
     # 9) 启动 TUI
     if ($Launch -and -not $NoLaunch -and -not $OnlyConfig) {
+        Set-Progress '准备启动 TUI' 96
         Start-Tui -LauncherBat (Join-Path $dshHome 'launchers\dsh-tui.bat') | Out-Null
     }
 
+    Set-Progress '安装完成' 100
     $summaryText = $summary -join '；'
     return @{ Ok = $true; Summary = $summaryText; DshHome = $dshHome; CredsPath = $credsPath }
 }
@@ -972,37 +1002,46 @@ namespace DshOneClick {
     $lblLogTitle.AutoSize = $true
     $txtLog = New-Object System.Windows.Forms.RichTextBox
     $txtLog.Location = New-Object System.Drawing.Point(16, 396)
-    $txtLog.Size = New-Object System.Drawing.Size(552, 104)
+    $txtLog.Size = New-Object System.Drawing.Size(552, 92)
     $txtLog.ReadOnly = $true
     $txtLog.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
     $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(200, 230, 200)
     $txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
     $txtLog.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 
+    $lblStatus = New-Object System.Windows.Forms.Label
+    $lblStatus.Text = '就绪'
+    $lblStatus.ForeColor = [System.Drawing.Color]::FromArgb(60, 120, 200)
+    $lblStatus.Location = New-Object System.Drawing.Point(16, 494)
+    $lblStatus.AutoSize = $true
+
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(16, 510)
+    $progress.Location = New-Object System.Drawing.Point(16, 514)
     $progress.Size = New-Object System.Drawing.Size(552, 12)
-    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+    $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Blocks   # 确定进度条：随安装步骤填充
+    $progress.Minimum = 0
+    $progress.Maximum = 100
+    $progress.Value = 0
     $progress.Visible = $false
 
     $btnInstall = New-Object System.Windows.Forms.Button
     $btnInstall.Text = if ($OnlyConfig) { '保存配置' } else { '一键安装' }
-    $btnInstall.Location = New-Object System.Drawing.Point(180, 530)
+    $btnInstall.Location = New-Object System.Drawing.Point(180, 536)
     $btnInstall.Size = New-Object System.Drawing.Size(110, 30)
     $btnInstall.BackColor = [System.Drawing.Color]::FromArgb(77, 171, 247)
     $btnInstall.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 
     $btnTest = New-Object System.Windows.Forms.Button
     $btnTest.Text = '仅测试连接'
-    $btnTest.Location = New-Object System.Drawing.Point(300, 530)
+    $btnTest.Location = New-Object System.Drawing.Point(300, 536)
     $btnTest.Size = New-Object System.Drawing.Size(110, 30)
 
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = '取消'
-    $btnCancel.Location = New-Object System.Drawing.Point(420, 530)
+    $btnCancel.Location = New-Object System.Drawing.Point(420, 536)
     $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
 
-    $form.Controls.AddRange(@($lblTitle, $lblHint, $grpConn, $grpOpt, $lblLogTitle, $txtLog, $progress, $btnInstall, $btnTest, $btnCancel))
+    $form.Controls.AddRange(@($lblTitle, $lblHint, $grpConn, $grpOpt, $lblLogTitle, $txtLog, $lblStatus, $progress, $btnInstall, $btnTest, $btnCancel))
     $grpConn.Controls.AddRange(@($lblKey, $txtKey, $lblBase, $txtBase, $lblEffort, $cmbEffort, $lblModel, $cmbModel))
     $grpOpt.Controls.AddRange(@($lblTuiVer, $cmbTuiVer, $chkSmooth, $chkShortcut, $chkLaunch))
 
@@ -1041,6 +1080,13 @@ namespace DshOneClick {
             $txtLog.ScrollToCaret()
             try { [Console]::WriteLine($line) } catch { }
         }
+        # 实时步骤状态 + 确定进度（安装流程通过 Set-Progress 写入共享对象）
+        if ($script:InstallProgress -and $script:InstallProgress.Step -ne '') {
+            $lblStatus.Text = $script:InstallProgress.Step
+            $v = $script:InstallProgress.Percent
+            if ($v -gt $progress.Value) { $progress.Value = $v }
+        }
+
         if ($script:InstallState.Done -and -not $script:InstallFinalized) {
             $script:InstallFinalized = $true
             $timer.Stop()
@@ -1089,6 +1135,9 @@ namespace DshOneClick {
         }
         Set-Busy $true
         $txtLog.Clear()
+        if ($script:InstallProgress) { $script:InstallProgress.Step = '准备安装…'; $script:InstallProgress.Percent = 0 }
+        $lblStatus.Text = '准备安装…'
+        $progress.Value = 0
         Start-InstallWorker -Key $txtKey.Text -Base $txtBase.Text `
             -Effort $(if ($cmbEffort.SelectedIndex -gt 0) { $cmbEffort.SelectedItem } else { '' }) `
             -Model $cmbModel.Text `
@@ -1105,9 +1154,11 @@ namespace DshOneClick {
         Set-Busy $true
         $txtLog.Clear()
         $txtLog.AppendText('正在测试连接…' + "`r`n")
+        $lblStatus.Text = '正在测试连接…'
         $form.Refresh()
         $r = Test-ApiKey -Key $txtKey.Text.Trim() -Base $txtBase.Text
         $txtLog.AppendText($r.Message + "`r`n")
+        $lblStatus.Text = if ($r.Ok) { '连接成功' } else { '连接失败' }
         Set-Busy $false
         [System.Windows.Forms.MessageBox]::Show($form, $r.Message, '连接测试', 'OK', $(if ($r.Ok) { 'Information' } else { 'Error' })) | Out-Null
     })
